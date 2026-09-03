@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
+"""Test access-name generation against an isolated synthetic kernel tree.
+
+Malformed fixtures ensure header drift and unsupported forms fail closed.
+"""
+
 import shutil
 import subprocess
 import tempfile

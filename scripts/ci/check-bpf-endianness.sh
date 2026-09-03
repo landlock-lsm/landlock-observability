@@ -1,14 +1,39 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
+# Re-run the package build script for little- and big-endian targets.
+# Check ELF EI_DATA so host byte order cannot silently select the BPF target.
+
 set -u -e -o pipefail
 
-if (( $# != 1 )); then
-	printf 'Usage: %s BUILD_SCRIPT_EXECUTABLE\n' "$0" >&2
+if (( $# > 1 )); then
+	printf 'Usage: %s [BUILD_SCRIPT_EXECUTABLE]\n' "$0" >&2
 	exit 2
 fi
 
-build_script=$1
+source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+build_script=${1:-}
+if [[ -z $build_script ]]; then
+	target_dir=${CARGO_TARGET_DIR:-$source_dir/target}
+	if [[ $target_dir != /* ]]; then
+		target_dir=$source_dir/$target_dir
+	fi
+	build_dir=$target_dir/debug/build
+	if [[ ! -d $build_dir ]]; then
+		printf 'error: Cargo build directory not found: %s\n' "$build_dir" >&2
+		exit 2
+	fi
+	mapfile -t build_scripts < <(
+		find "$build_dir" -maxdepth 2 -type f -executable \
+			-path '*/landlock-observability-*/build-script-build' \
+			-printf '%T@ %p\n' | sort -rn
+	)
+	if (( ${#build_scripts[@]} == 0 )); then
+		echo 'error: landlock-observability build script not found' >&2
+		exit 2
+	fi
+	build_script=${build_scripts[0]#* }
+fi
 if [[ ! -f $build_script ]]; then
 	printf 'error: build-script executable not found: %s\n' "$build_script" >&2
 	exit 2
@@ -19,7 +44,6 @@ if [[ ! -x $build_script ]]; then
 fi
 
 build_script=$(cd -- "$(dirname -- "$build_script")" && pwd -P)/$(basename -- "$build_script")
-source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 temp_root=$(mktemp -d -- "${TMPDIR:-/tmp}/check-bpf-endianness.XXXXXX")
 cleanup()
 {

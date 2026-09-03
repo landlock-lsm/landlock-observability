@@ -1,0 +1,188 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: CI
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTDOCFLAGS: -D warnings
+  RUSTFLAGS: -D warnings
+  # Linux v7.3-rc1, the first upstream release containing the Landlock
+  # tracing interface used by this crate (Landlock ABI 11).
+  LINUX_COMMIT: cee9395acd8043be0644b25c34bfa86623f2b935
+
+jobs:
+  commit_list:
+    runs-on: ubuntu-24.04
+    steps:
+
+    - uses: actions/checkout@v5
+      with:
+        fetch-depth: 0
+
+    - name: Get commit list (push)
+      id: get_commit_list_push
+      if: ${{ github.event_name == 'push' }}
+      run: |
+        echo "id0=$GITHUB_SHA" > "$GITHUB_OUTPUT"
+        echo "List of tested commits:" > "$GITHUB_STEP_SUMMARY"
+        sed -n 's,^id[0-9]\+=\(.*\),- https://github.com/landlock-lsm/landlock-observability/commit/\1,p' -- "$GITHUB_OUTPUT" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Get commit list (PR)
+      id: get_commit_list_pr
+      if: ${{ github.event_name == 'pull_request' }}
+      env:
+        BASE_REF: refs/remotes/origin/${{ github.base_ref }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        MERGE_SHA: ${{ github.sha }}
+      run: |
+        git rev-list --reverse "${BASE_REF}..${HEAD_SHA}" | awk '{ print "id" NR "=" $1 }' > "$GITHUB_OUTPUT"
+        git diff --quiet "$HEAD_SHA" "$MERGE_SHA" || echo "id0=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+        echo "List of tested commits:" > "$GITHUB_STEP_SUMMARY"
+        sed -n 's,^id[0-9]\+=\(.*\),- https://github.com/landlock-lsm/landlock-observability/commit/\1,p' -- "$GITHUB_OUTPUT" >> "$GITHUB_STEP_SUMMARY"
+
+    outputs:
+      commits: ${{ toJSON(steps.*.outputs.*) }}
+
+  ubuntu_24_rust_msrv:
+    runs-on: ubuntu-24.04
+    needs: commit_list
+    strategy:
+      fail-fast: false
+      matrix:
+        commit: ${{ fromJSON(needs.commit_list.outputs.commits) }}
+    steps:
+
+    - name: Install native build prerequisites
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          clang \
+          clang-format \
+          gcc \
+          libelf-dev \
+          llvm \
+          make \
+          pkg-config \
+          zlib1g-dev
+
+    - uses: actions/checkout@v5
+      with:
+        ref: ${{ matrix.commit }}
+
+    - name: Get MSRV
+      run: sed -n 's/^rust-version = "\([0-9.]\+\)"$/RUST_TOOLCHAIN=\1/p' Cargo.toml >> "$GITHUB_ENV"
+
+    - name: Install Rust MSRV
+      run: |
+        rm ~/.cargo/bin/{cargo-fmt,rustfmt} || :
+        rustup self update
+        rustup default ${{ env.RUST_TOOLCHAIN }}
+        rustup update ${{ env.RUST_TOOLCHAIN }}
+        rustup component add rustfmt --toolchain ${{ env.RUST_TOOLCHAIN }}
+
+    - name: Build all targets
+      run: rustup run ${{ env.RUST_TOOLCHAIN }} cargo build --locked --workspace --all-targets
+
+    - name: Test all targets
+      run: rustup run ${{ env.RUST_TOOLCHAIN }} cargo test --locked --workspace --all-targets
+
+  ubuntu_24_rust_stable:
+    runs-on: ubuntu-24.04
+    needs: commit_list
+    strategy:
+      fail-fast: false
+      matrix:
+        commit: ${{ fromJSON(needs.commit_list.outputs.commits) }}
+    steps:
+
+    - name: Install native build prerequisites
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          clang \
+          clang-format \
+          gcc \
+          libelf-dev \
+          llvm \
+          make \
+          pkg-config \
+          zlib1g-dev
+
+    - name: Install Rust stable
+      run: |
+        rm ~/.cargo/bin/{cargo-fmt,rustfmt} || :
+        rustup self update
+        rustup default stable
+        rustup component add rustfmt clippy
+        rustup update
+
+    - uses: actions/checkout@v5
+      with:
+        ref: ${{ matrix.commit }}
+
+    - name: Check Rust formatting
+      run: rustup run stable cargo fmt --all -- --check
+
+    - name: Build all targets
+      run: rustup run stable cargo build --locked --workspace --all-targets
+
+    - name: Compile README examples
+      run: |
+        rustup run stable rustdoc \
+          --edition 2021 \
+          --test README.md \
+          -L dependency=target/debug/deps \
+          --extern landlock_observability=target/debug/liblandlock_observability.rlib
+
+    - name: Check BPF target endianness
+      run: ./scripts/ci/check-bpf-endianness.sh
+
+    - name: Test all targets
+      run: rustup run stable cargo test --locked --workspace --all-targets
+
+    - name: Check documentation
+      run: rustup run stable cargo doc --locked --workspace --no-deps
+
+    - name: Check all targets with Clippy
+      run: rustup run stable cargo clippy --locked --workspace --all-targets -- --deny warnings
+
+    - name: Check BPF C formatting
+      run: clang-format --dry-run --Werror src/bpf/*.c src/bpf/*.h
+
+    - name: Check generated wire fixtures
+      run: ./tests/fixtures/wire/generate.py --check
+
+    - name: Test access-name generator
+      run: ./tests/generate_access_names.py
+
+    - name: Check package policy
+      run: ./scripts/ci/check-package-policy.sh
+
+    - name: Verify packages
+      run: rustup run stable cargo package --locked --workspace
+
+    - name: Check out Landlock access definitions
+      uses: actions/checkout@v5
+      with:
+        repository: landlock-lsm/linux
+        ref: ${{ env.LINUX_COMMIT }}
+        path: linux-landlock-headers
+        fetch-depth: 1
+        sparse-checkout: |
+          include/linux/landlock.h
+          include/uapi/linux/landlock.h
+        sparse-checkout-cone-mode: false
+
+    - name: Check production access names
+      run: |
+        ./scripts/generate-access-names.py \
+          --kernel-tree linux-landlock-headers \
+          --check

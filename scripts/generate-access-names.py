@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-"""Generate reviewed Rust access-name tables from Linux Landlock headers."""
+"""Generate Rust access-name tables from Linux Landlock headers.
+
+Cross-check UAPI bits against kernel name lists so additions cannot be
+silently omitted or mislabeled.
+"""
 
 import argparse
 import difflib

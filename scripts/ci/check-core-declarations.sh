@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
+# Validate generated BPF CO-RE requirements against an explicit kernel BTF.
+# This catches declarations that cannot relocate on the tested kernel.
+
 set -u -e -o pipefail
 
 usage()

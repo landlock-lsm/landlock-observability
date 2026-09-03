@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-"""Generate independent fixed-layout decoder fixtures."""
+"""Generate fixed wire-decoder fixtures independently of Rust layout code.
+
+Use explicit offsets and both byte orders so decoding is not checked against
+the same definitions that implement it.
+"""
 
 import argparse
 import struct
