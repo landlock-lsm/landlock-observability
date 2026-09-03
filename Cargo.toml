@@ -18,5 +18,14 @@ libbpf-rs = "0.24"
 [build-dependencies]
 libbpf-cargo = "0.24"
 
+[dev-dependencies]
+landlock = "0.4.7"
+nix = { version = "0.31", default-features = false, features = [
+    "process",
+    "ptrace",
+    "signal",
+] }
+wait-timeout = "0.2.1"
+
 [workspace]
 resolver = "2"

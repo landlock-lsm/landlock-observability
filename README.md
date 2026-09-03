@@ -41,6 +41,26 @@ build-time requirements; Python and bpftool are used only by maintainer checks.
 cargo build --locked
 ```
 
+A normal `cargo test --locked` run does not load BPF.  The `kernel_events`
+integration test is explicitly ignored in normal Cargo runs because it requires
+the pinned landlock-test-tools x86_64 guest.  After building and locating the
+exact test executable on the host, run it in that guest:
+
+```console
+./landlock-test-tools/x86-run.sh /path/to/bzImage -- \
+  env LANDLOCK_CRATE_TEST_ABI=11 /path/to/kernel_events-test \
+  --ignored --exact kernel_events --test-threads 1
+```
+
+A missing, empty, or different ABI value is an error.  The CI workflow builds
+the fixed Linux revision with the test tools' default light x86_64
+configuration, checks the generated BPF object's CO-RE declarations against
+that kernel, and runs the test in a fresh guest.  The x86 harness runs the test
+as the invoking UID while preserving capabilities.  It requires `virtme-ng`
+and `qemu-system-x86`.
+
+This privileged test is intentionally not attempted directly on the host.
+
 ## Runtime requirements
 
 Creating a `Collector` loads BPF into the running kernel and attaches tracing
@@ -171,9 +191,11 @@ The high-volume `landlock_check_rule` family is intentionally not collected.
 ## Licensing and distribution
 
 The root package has the SPDX expression
-`(MIT OR Apache-2.0) AND GPL-2.0-only`.  Rust and other userspace source is
-available under MIT or Apache-2.0.  The separately executing embedded BPF
-program and its minimal Linux kernel declarations are GPL-2.0-only.  The kernel's BPF licensing model permits a userspace application and a BPF
+`(MIT OR Apache-2.0) AND GPL-2.0-only`.  Rust and other original userspace
+source is available under MIT or Apache-2.0.  The separately executing embedded
+BPF program and minimal Linux kernel declarations are GPL-2.0-only.
+
+The kernel's BPF licensing model permits a userspace application and a BPF
 program to carry different licenses because they are separate programs; see
 <https://docs.kernel.org/bpf/bpf_licensing.html>.  Distributors must preserve
 the applicable copyright and license notices and provide the corresponding BPF

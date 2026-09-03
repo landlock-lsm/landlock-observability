@@ -8,7 +8,7 @@ option. All files in the project carrying such notice may not be
 copied, modified, or distributed except according to those terms.
 Markdown documentation is licensed under the same terms.
 
-BPF programs and minimal Linux kernel CO-RE declarations are
-licensed under the GNU General Public License, Version 2 only
+BPF programs and minimal Linux kernel CO-RE declarations are licensed under
+the GNU General Public License, Version 2 only
 <LICENSE-GPL or
 https://www.gnu.org/licenses/old-licenses/gpl-2.0.html>.

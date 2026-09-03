@@ -9,15 +9,18 @@ set -u -e -o pipefail
 usage()
 {
 	cat <<'EOF'
-Usage: scripts/ci/check-core-declarations.sh --vmlinux FILE --bpf-object FILE [--dump]
+Usage: scripts/ci/check-core-declarations.sh --vmlinux FILE \
+       (--bpf-object FILE | --build-dir DIR) [--dump]
 
-Generate the minimal CO-RE BTF in a temporary directory.  --dump writes its
-C declaration dump to standard output for review.  No committed file is edited.
+Generate the minimal CO-RE BTF in a temporary directory.  A build directory
+checks every landlock-observability BPF object beneath it.  --dump writes C
+declarations to standard output for review.  No committed file is edited.
 EOF
 }
 
 vmlinux=
 bpf_object=
+build_dir=
 dump=false
 while (($#)); do
 	case "$1" in
@@ -25,17 +28,23 @@ while (($#)); do
 		usage
 		exit 0
 		;;
-	--vmlinux | --bpf-object)
+	--vmlinux | --bpf-object | --build-dir)
 		if (($# < 2)); then
-			echo "error: $1 requires a file" >&2
+			echo "error: $1 requires a path" >&2
 			usage >&2
 			exit 2
 		fi
-		if [[ $1 == --vmlinux ]]; then
+		case "$1" in
+		--vmlinux)
 			vmlinux=$2
-		else
+			;;
+		--bpf-object)
 			bpf_object=$2
-		fi
+			;;
+		--build-dir)
+			build_dir=$2
+			;;
+		esac
 		shift 2
 		;;
 	--dump)
@@ -50,10 +59,33 @@ while (($#)); do
 	esac
 done
 
-if [[ -z $vmlinux || -z $bpf_object ]]; then
-	echo "error: --vmlinux and --bpf-object are required" >&2
+if [[ -z $vmlinux || ( -z $bpf_object && -z $build_dir ) ||
+	( -n $bpf_object && -n $build_dir ) ]]; then
+	echo "error: --vmlinux and exactly one object source are required" >&2
 	usage >&2
 	exit 2
+fi
+if [[ -n $build_dir ]]; then
+	if [[ ! -d $build_dir ]]; then
+		printf 'error: build directory not found: %s\n' "$build_dir" >&2
+		exit 2
+	fi
+	mapfile -t bpf_objects < <(
+		find "$build_dir" -type f \
+			-name landlock_observability.bpf.o -print
+	)
+	if (( ${#bpf_objects[@]} == 0 )); then
+		printf 'error: no BPF object found beneath: %s\n' "$build_dir" >&2
+		exit 1
+	fi
+	for object in "${bpf_objects[@]}"; do
+		arguments=(--vmlinux "$vmlinux" --bpf-object "$object")
+		if [[ $dump == true ]]; then
+			arguments+=(--dump)
+		fi
+		"${BASH_SOURCE[0]}" "${arguments[@]}"
+	done
+	exit 0
 fi
 if [[ ! -f $vmlinux || ! -r $vmlinux ]]; then
 	echo "error: vmlinux is not a readable regular file: $vmlinux" >&2
