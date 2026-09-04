@@ -242,6 +242,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
             u32_at(data, 24, "enforcing_tid")?,
             boolean_at(data, 28, "complete")?,
             boolean_at(data, 29, "process_wide")?,
+            boolean_at(data, 30, "no_new_privs")?,
         )),
         _ => Event::Unknown(UnknownEvent::new(timestamp, event_type, data.len())),
     };
@@ -437,6 +438,7 @@ mod tests {
                 0xCD00000C,
                 true,
                 false,
+                true,
             )),
         ];
 
@@ -625,6 +627,21 @@ mod tests {
         assert_eq!(value.enforcing_tid(), 0xCD00000C);
         assert!(value.complete());
         assert!(!value.process_wide());
+        assert!(value.no_new_privs());
+    }
+
+    #[test]
+    fn decodes_both_no_new_privs_values() {
+        let mut data = *FIXTURES[11];
+        let Event::EnforceDomain(one) = decode(&data).unwrap() else {
+            panic!()
+        };
+        assert!(one.no_new_privs());
+        data[30] = 0;
+        let Event::EnforceDomain(zero) = decode(&data).unwrap() else {
+            panic!()
+        };
+        assert!(!zero.no_new_privs());
     }
 
     #[test]
@@ -690,6 +707,7 @@ mod tests {
             (4, 69, "logged"),
             (11, 28, "complete"),
             (11, 29, "process_wide"),
+            (11, 30, "no_new_privs"),
         ] {
             for value in [2, 255] {
                 let mut data = *FIXTURES[fixture];

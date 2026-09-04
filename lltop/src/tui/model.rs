@@ -180,6 +180,7 @@ mod tests {
             1,
             true,
             false,
+            true,
         )));
         assert_eq!(model.allocated_domains(), 5);
         assert_eq!(model.allocated_rulesets(), 1);

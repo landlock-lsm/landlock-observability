@@ -16,13 +16,13 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use landlock::{
-    Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, Ruleset, RulesetAttr,
-    RulesetCreatedAttr, Scope, ABI,
+    Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, RestrictSelfAttr, Ruleset,
+    RulesetAttr, RulesetCreatedAttr, Scope, ABI,
 };
 use landlock_observability::collector::Collector;
 use landlock_observability::event::{
-    DenialContext, DomainId, DomainMembership, Event, FilesystemAccess, NetworkAccess, RulesetId,
-    ScopeAccess,
+    DenialContext, DomainId, DomainMembership, EnforceDomainEvent, Event, FilesystemAccess,
+    NetworkAccess, RulesetId, ScopeAccess,
 };
 use landlock_observability::state::{DomainParent, LifecycleState, RulesetVersion, State};
 use nix::errno::Errno;
@@ -36,6 +36,29 @@ const ALLOWED_PORT: u16 = 9;
 const DENIED_PORT: u16 = 1;
 // ABI v9 is the newest ABI supported by the `landlock` 0.4.7 crate.
 const TESTED_ACCESS_ABI: ABI = ABI::V9;
+
+struct ProcessGuard(Child);
+
+impl std::ops::Deref for ProcessGuard {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ProcessGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ProcessGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum ExpectedEventKind {
@@ -148,7 +171,7 @@ impl Target {
                         break Err(io::Error::new(
                             io::ErrorKind::UnexpectedEof,
                             "missing READY line",
-                        ))
+                        ));
                     }
                     Ok(_) if line.contains("READY") => break Ok(()),
                     Ok(_) => {}
@@ -344,6 +367,132 @@ fn scenario_helper() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn no_new_privs_tsync_helper(no_new_privs: bool) -> Result<(), Box<dyn Error>> {
+    // This sibling predates any PR_SET_NO_NEW_PRIVS call. Creating it later
+    // would test clone inheritance instead of TSYNC synchronization.
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let (done_tx, done_rx) = mpsc::sync_channel(1);
+    let sibling = thread::spawn(move || {
+        ready_tx.send(()).unwrap();
+        done_rx.recv().unwrap();
+    });
+    ready_rx.recv_timeout(DEADLINE)?;
+
+    let status = Ruleset::default()
+        .handle_access(AccessFs::ReadFile)?
+        .create()?
+        .all_threads(true)?
+        .no_new_privs(no_new_privs)
+        .restrict_self();
+    done_tx.send(())?;
+    sibling.join().map_err(|_| "TSYNC sibling panicked")?;
+    let status = status?;
+    if status.ruleset != landlock::RulesetStatus::FullyEnforced || !status.all_threads {
+        return Err(format!("ruleset was not fully synchronized: {status:?}").into());
+    }
+    Ok(())
+}
+
+fn has_cap_sys_admin() -> Result<bool, Box<dyn Error>> {
+    let status = fs::read_to_string("/proc/self/status")?;
+    let value = status
+        .lines()
+        .find_map(|line| line.strip_prefix("CapEff:\t"))
+        .ok_or("missing CapEff in /proc/self/status")?;
+    Ok(u64::from_str_radix(value, 16)? & (1 << 21) != 0)
+}
+
+fn no_new_privs_tsync_test(no_new_privs: bool) -> Result<(), Box<dyn Error>> {
+    let mut collector = Collector::with_event_capacity(128)?;
+    let executable = env::current_exe()?;
+    let mode = if no_new_privs {
+        "nnp-tsync-1"
+    } else {
+        "nnp-tsync-0"
+    };
+    let mut child = ProcessGuard(
+        Command::new(executable)
+            .arg("--ignored")
+            .arg("--exact")
+            .arg("kernel_events")
+            .arg("--nocapture")
+            .env("KERNEL_EVENTS_MODE", mode)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()?,
+    );
+    let creator_tgid = child.id();
+    let deadline = Instant::now() + DEADLINE;
+    let mut domain_id = None;
+    let mut candidates = Vec::new();
+    loop {
+        if domain_id.is_some()
+            && candidates
+                .iter()
+                .filter(|event: &&EnforceDomainEvent| Some(event.domain_id()) == domain_id)
+                .count()
+                >= 2
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "timed out waiting for two TSYNC no_new_privs={no_new_privs} observations: {candidates:?}"
+            )
+            .into());
+        }
+        match collector.recv_timeout(Duration::from_millis(100)) {
+            Ok(Event::CreateDomain(event)) if event.creator_tgid() == creator_tgid => {
+                domain_id = Some(event.domain_id());
+            }
+            Ok(Event::EnforceDomain(event)) => candidates.push(event),
+            Ok(Event::Unknown(event)) => {
+                return Err(format!("unknown event during TSYNC scenario: {event:?}").into());
+            }
+            Ok(_) | Err(landlock_observability::collector::ReceiveTimeoutError::Timeout) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let status = wait_for_exit(&mut child, DEADLINE)?;
+    if !status.success() {
+        return Err(format!("TSYNC no_new_privs={no_new_privs} child exited with {status}").into());
+    }
+    loop {
+        match collector.recv_timeout(Duration::from_millis(100)) {
+            Ok(Event::EnforceDomain(event)) => candidates.push(event),
+            Ok(Event::Unknown(event)) => {
+                return Err(format!("unknown event during TSYNC drain: {event:?}").into());
+            }
+            Ok(_) => {}
+            Err(landlock_observability::collector::ReceiveTimeoutError::Timeout) => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let observations = candidates
+        .into_iter()
+        .filter(|event| Some(event.domain_id()) == domain_id)
+        .collect::<Vec<_>>();
+    let tids = observations
+        .iter()
+        .map(|event| event.enforcing_tid())
+        .collect::<HashSet<_>>();
+    // The Rust test harness may already have a sibling in addition to the one
+    // created explicitly above. Every eligible thread must emit exactly once.
+    assert!(observations.len() >= 2);
+    assert_eq!(tids.len(), observations.len());
+    assert_eq!(
+        observations.iter().filter(|event| event.complete()).count(),
+        1
+    );
+    assert!(observations.iter().all(|event| event.process_wide()));
+    assert!(observations
+        .iter()
+        .all(|event| event.no_new_privs() == no_new_privs));
+    Ok(())
+}
+
 fn filesystem_access(access: AccessFs) -> FilesystemAccess {
     FilesystemAccess::from_bits(
         u32::try_from(access as u64).expect("filesystem access bit fits u32"),
@@ -472,7 +621,7 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
                     break Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "missing DONE line",
-                    ))
+                    ));
                 }
                 Ok(_) => {
                     if let Some(offset) = line.find("DONE ") {
@@ -618,6 +767,7 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
                 assert_eq!(value.enforcing_tid(), enforcing_tid);
                 assert!(value.complete());
                 assert!(!value.process_wide());
+                assert!(value.no_new_privs());
             }
             ExpectedEventKind::DenyAccessFs | ExpectedEventKind::DenyAccessFsDifferentExec => {
                 let value = expect_event!(event, kind, DenyAccessFs);
@@ -730,6 +880,7 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
     assert_eq!(domain.parent(), Some(DomainParent::Root));
     assert_eq!(domain.creator_tgid(), Some(creator_tgid));
     assert_eq!(domain.ruleset(), Some(RulesetVersion::new(ruleset_id, 2)));
+    assert_eq!(domain.no_new_privs(), Some(true));
     assert_eq!(domain.cumulative_denial_count(), Some(6));
     assert_eq!(domain.final_denial_count(), Some(6));
     assert_eq!(domain.enforcement_event_count(), 1);
@@ -758,8 +909,21 @@ fn kernel_events() -> Result<(), Box<dyn Error>> {
         Ok(mode) if mode == "abstract-target" => target_helper(true),
         Ok(mode) if mode == "scenario" => scenario_helper(),
         Ok(mode) if mode == "post-exec" => post_exec_helper(),
+        Ok(mode) if mode == "nnp-tsync-1" => no_new_privs_tsync_helper(true),
+        Ok(mode) if mode == "nnp-tsync-0" => no_new_privs_tsync_helper(false),
         Ok(mode) => Err(format!("unknown KERNEL_EVENTS_MODE: {mode}").into()),
-        Err(env::VarError::NotPresent) => parent_test(),
+        Err(env::VarError::NotPresent) => {
+            parent_test()?;
+            no_new_privs_tsync_test(true)?;
+            if !has_cap_sys_admin()? {
+                return Err(
+                    "no_new_privs=0 TSYNC coverage requires effective CAP_SYS_ADMIN in the fixed guest"
+                        .into(),
+                );
+            }
+            no_new_privs_tsync_test(false)?;
+            Ok(())
+        }
         Err(error) => Err(error.into()),
     }
 }

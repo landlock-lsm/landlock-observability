@@ -287,8 +287,11 @@ fn format_domain(domain: &DomainState) -> String {
         (Some(comm), Some(tgid)) => format!("{}[{tgid}]", escape(comm)),
         _ => "?".to_owned(),
     };
+    let no_new_privs = domain
+        .no_new_privs()
+        .map_or("?", |value| if value { "1" } else { "0" });
     format!(
-        "DOMAIN domain={} parent={parent} ruleset={ruleset} creator={creator}",
+        "DOMAIN domain={} parent={parent} ruleset={ruleset} creator={creator} no_new_privs={no_new_privs}",
         hex_id(domain.domain_id().get())
     )
 }
@@ -448,8 +451,8 @@ mod tests {
     use super::*;
     use landlock_observability::event::{
         CreateDomainEvent, DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
-        DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, FreeDomainEvent, FreeRulesetEvent,
-        HierarchySnapshot, KernelTimestamp, UnknownEvent,
+        DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, EnforceDomainEvent,
+        FreeDomainEvent, FreeRulesetEvent, HierarchySnapshot, KernelTimestamp, UnknownEvent,
     };
 
     fn timestamp(seconds: u64) -> KernelTimestamp {
@@ -500,7 +503,7 @@ mod tests {
         assert_eq!(
             batch.process(&create),
             [
-                "DOMAIN domain=10 parent=0 ruleset=20.3 creator=shell[42]",
+                "DOMAIN domain=10 parent=0 ruleset=20.3 creator=shell[42] no_new_privs=?",
                 "STATS domains=1/1 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
             ]
         );
@@ -518,8 +521,8 @@ mod tests {
         assert_eq!(
             batch.process(&late_create),
             [
-                "DOMAIN domain=10 parent=11 ruleset=30.4 creator=upgraded[43]",
-                "DOMAIN domain=11 parent=? ruleset=? creator=?",
+                "DOMAIN domain=10 parent=11 ruleset=30.4 creator=upgraded[43] no_new_privs=?",
+                "DOMAIN domain=11 parent=? ruleset=? creator=? no_new_privs=?",
                 "STATS domains=1/2 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
             ]
         );
@@ -541,8 +544,59 @@ mod tests {
         assert_eq!(
             batch.process(&late_domain),
             [
-                "DOMAIN domain=cd parent=? ruleset=? creator=?",
+                "DOMAIN domain=cd parent=? ruleset=? creator=? no_new_privs=?",
                 "STATS domains=1/3 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
+            ]
+        );
+    }
+
+    #[test]
+    fn enforcement_reports_weakest_observed_no_new_privs_fact() {
+        let mut batch = Batch::new();
+        let id = DomainId::new(0x10);
+        let first = Event::EnforceDomain(EnforceDomainEvent::new(
+            timestamp(1),
+            id,
+            100,
+            false,
+            true,
+            true,
+        ));
+        let weakest = Event::EnforceDomain(EnforceDomainEvent::new(
+            timestamp(2),
+            id,
+            101,
+            true,
+            true,
+            false,
+        ));
+        let updated = Event::EnforceDomain(EnforceDomainEvent::new(
+            timestamp(3),
+            id,
+            101,
+            true,
+            true,
+            true,
+        ));
+        assert_eq!(
+            batch.process(&first),
+            [
+                "DOMAIN domain=10 parent=? ruleset=? creator=? no_new_privs=1",
+                "STATS domains=1/1 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
+            ]
+        );
+        assert_eq!(
+            batch.process(&weakest),
+            [
+                "DOMAIN domain=10 parent=? ruleset=? creator=? no_new_privs=0",
+                "STATS domains=1/1 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
+            ]
+        );
+        assert_eq!(
+            batch.process(&updated),
+            [
+                "DOMAIN domain=10 parent=? ruleset=? creator=? no_new_privs=1",
+                "STATS domains=1/1 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
             ]
         );
     }
@@ -726,8 +780,8 @@ mod tests {
         assert_eq!(
             output,
             [
-                "DOMAIN domain=1 parent=0 ruleset=? creator=creator[10]",
-                "DOMAIN domain=2 parent=? ruleset=? creator=?",
+                "DOMAIN domain=1 parent=0 ruleset=? creator=creator[10] no_new_privs=?",
+                "DOMAIN domain=2 parent=? ruleset=? creator=? no_new_privs=?",
                 "DENIAL type=SIGNAL domain=1 blockers=Scope:signal target=pid:3:target count=1 age=0s same_exec=1 logged=0 target_domain=2",
                 "STATS domains=1/2 denials=1 (fs=0 net=0 ptrace=0 signal=1 abstract_unix=0)",
             ]
