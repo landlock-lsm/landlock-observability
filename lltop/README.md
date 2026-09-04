@@ -33,11 +33,31 @@ acknowledgement; its local write and flush result is ignored so keyboard
 operation does not depend on mouse setup.
 
 Denials are grouped by domain, blocked access, and semantic target. Groups and
-targets prioritize impact and recency. `audit-visible` and `trace-only` report
-the kernel's `logged` decision directly. Recency styling is based on the newest
-kernel timestamp seen, with bands below 1, 5, and 30 seconds. All captured
-strings are escaped before display, and long values wrap at comma-space, slash,
-or space boundaries with indented continuations.
+targets prioritize impact and recency. Across the dashboard, the display keeps
+structural, aggregate, visibility, identity, recency, and lifecycle information
+distinct:
+
+| Row or column | Information class | Meaning |
+|---------------|-------------------|---------|
+| Domain and blocked-access rows | Structure | Group headings; they do not carry occurrence counts. |
+| Count | Aggregate | The saturating local count for this semantic denial target. |
+| `🔔` / `🔕` | Audit visibility | `🔔` is audit-visible (`logged=1`); `🔕` is trace-only (`logged=0`). The marker reflects the latest matching denial. |
+| Target | Identity | The escaped path, port, process, or peer represented by the row. Wrapped continuations remain aligned with this field. |
+| Row color and emphasis | Recency | Age of the latest observation, independently of audit visibility. |
+| Active, freed, and unknown styles | Lifecycle knowledge | Whether reconstructed object state is current, historical, or incomplete. |
+
+The visibility column reserves two terminal cells. Its `🔔` and `🔕` constants
+are default-presentation, two-cell emoji, and tests enforce that width so a
+maintainer can safely replace either with a similar marker. Detail panes repeat
+the marker before the explicit `audit-visible` or `trace-only` text. Wrapping
+reuses ratatui's terminal-cell measurements, stays on UTF-8 character
+boundaries, and computes selected-row continuation indentation from the actual
+prefix width when the detail pane narrows the list.
+
+Recency styling is based on the newest kernel timestamp seen, with bands below
+1, 5, and 30 seconds. All captured strings are escaped before display, and long
+values wrap at comma-space, slash, or space boundaries with indented
+continuations.
 
 Raw mode, alternate-screen state, and attempted mouse reporting are owned by an
 unwind-safe guard and restored on normal exit, errors, and panic. Mouse rollback

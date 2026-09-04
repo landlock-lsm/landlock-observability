@@ -3,6 +3,7 @@
 use landlock_observability::event::{
     CapturedString, FilesystemAccess, KernelTimestamp, NetworkAccess, ScopeAccess,
 };
+use ratatui::text::Span;
 
 pub(super) fn hex_id(value: u64) -> String {
     format!("{value:x}")
@@ -80,6 +81,10 @@ pub(super) fn timestamp(value: Option<KernelTimestamp>) -> String {
     value.map_or_else(|| "?".to_owned(), |v| format!("{}ns", v.as_nanoseconds()))
 }
 
+pub(super) fn display_width(text: &str) -> usize {
+    Span::raw(text).width()
+}
+
 pub(super) fn wrap(text: &str, first_width: usize, continuation_width: usize) -> Vec<String> {
     if text.is_empty() {
         return vec![String::new()];
@@ -87,11 +92,21 @@ pub(super) fn wrap(text: &str, first_width: usize, continuation_width: usize) ->
     let mut remaining = text;
     let mut width = first_width.max(1);
     let mut output = Vec::new();
-    while remaining.chars().count() > width {
-        let byte_limit = remaining
-            .char_indices()
-            .nth(width)
-            .map_or(remaining.len(), |(index, _)| index);
+    while display_width(remaining) > width {
+        let mut used_width = 0;
+        let mut byte_limit = 0;
+        for (index, character) in remaining.char_indices() {
+            let mut encoded = [0; 4];
+            let character_width = display_width(character.encode_utf8(&mut encoded));
+            if used_width + character_width > width {
+                if byte_limit == 0 {
+                    byte_limit = index + character.len_utf8();
+                }
+                break;
+            }
+            used_width += character_width;
+            byte_limit = index + character.len_utf8();
+        }
         let candidate = &remaining[..byte_limit];
         let split = candidate
             .rfind(", ")
@@ -140,6 +155,9 @@ mod tests {
         );
         assert_eq!(wrap("/long/path/name", 10, 8), ["/long/", "path/", "name"]);
         assert_eq!(wrap("éééé", 2, 2), ["éé", "éé"]);
+        assert_eq!(wrap("界界", 2, 2), ["界", "界"]);
+        assert_eq!(wrap("🔕x", 2, 2), ["🔕", "x"]);
+        assert_eq!(wrap("🔔x", 2, 2), ["🔔", "x"]);
         assert_eq!(wrap("abcdef", 3, 2), ["abc", "de", "f"]);
     }
 }
