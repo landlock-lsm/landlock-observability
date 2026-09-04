@@ -261,12 +261,20 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, model: &ObservationMode
 }
 
 fn status_line(app: &App, model: &ObservationModel) -> String {
+    let missing_no_new_privs = model.state.domains().any(|domain| {
+        domain.lifecycle() == LifecycleState::Allocated && domain.no_new_privs() == Some(false)
+    });
     format!(
-        " {} domains ({} allocated) | {} denials{}{}",
+        " {} domains ({} allocated) | {} denials{}{}{}",
         model.state.domain_count(),
         model.allocated_domains(),
         model.stats.total,
         if app.paused { " | PAUSED" } else { "" },
+        if missing_no_new_privs {
+            " | WARNING: missing no_new_privs means privilege gain is possible"
+        } else {
+            ""
+        },
         app.collector_warning
             .as_ref()
             .map_or_else(String::new, |warning| format!(
@@ -378,7 +386,13 @@ fn domain_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Disp
             let count = domain
                 .cumulative_denial_count()
                 .map_or_else(|| "?".to_owned(), |value| value.to_string());
-            let status = lifecycle(domain.lifecycle());
+            let status = match (domain.lifecycle(), domain.no_new_privs()) {
+                (LifecycleState::Allocated, Some(false)) => format!(
+                    "{}; WARNING: missing no_new_privs means privilege gain is possible",
+                    lifecycle(domain.lifecycle())
+                ),
+                _ => lifecycle(domain.lifecycle()).to_owned(),
+            };
             Some(DisplayRow {
                 style: selected_style(&kind, selected, lifecycle_style(domain.lifecycle())),
                 kind,
@@ -633,6 +647,25 @@ fn detail_lines(app: &App, model: &ObservationModel, width: usize) -> Vec<Line<'
                     domain.enforcement_event_count().to_string(),
                     theme::normal(),
                 ));
+                fields.push(match (domain.lifecycle(), domain.no_new_privs()) {
+                    (_, None) => ("no_new_privs: ".into(), "unknown".into(), theme::unknown()),
+                    (_, Some(true)) => (
+                        "no_new_privs: ".into(),
+                        "set for all latest observed enforcing TIDs".into(),
+                        theme::observed(),
+                    ),
+                    (LifecycleState::Allocated, Some(false)) => (
+                        "no_new_privs: ".into(),
+                        "WARNING: missing no_new_privs means privilege gain is possible".into(),
+                        theme::hot(),
+                    ),
+                    (_, Some(false)) => (
+                        "no_new_privs: ".into(),
+                        "historical observation: missing no_new_privs; privilege gain was possible"
+                            .into(),
+                        theme::tombstone(),
+                    ),
+                });
                 if domain_ruleset(domain).is_some() {
                     fields.push((
                         String::new(),
@@ -848,8 +881,8 @@ mod tests {
     use super::*;
     use landlock_observability::event::{
         AddRuleFsEvent, AddRuleNetEvent, CapturedString, CreateRulesetEvent, DenialContext,
-        DenyAccessFsEvent, DenyAccessNetEvent, FilesystemAccess, HierarchySnapshot,
-        KernelTimestamp, NetworkAccess, ScopeAccess,
+        DenyAccessFsEvent, DenyAccessNetEvent, EnforceDomainEvent, FilesystemAccess,
+        FreeDomainEvent, HierarchySnapshot, KernelTimestamp, NetworkAccess, ScopeAccess,
     };
 
     fn denial(domain: u64, count: u64, timestamp: u64, inode: u64) -> Event {
@@ -878,6 +911,53 @@ mod tests {
         assert_eq!(lifecycle(LifecycleState::Unknown), "partial");
         assert_eq!(lifecycle(LifecycleState::Allocated), "allocated");
         assert_eq!(lifecycle(LifecycleState::Deallocated), "deallocated");
+    }
+
+    #[test]
+    fn missing_no_new_privs_has_precise_status_and_detail_warning() {
+        let mut model = ObservationModel::new();
+        let id = DomainId::new(7);
+        model.observe(&Event::EnforceDomain(EnforceDomainEvent::new(
+            KernelTimestamp::from_nanoseconds(1),
+            id,
+            10,
+            true,
+            true,
+            false,
+        )));
+
+        let rows = domain_rows(&model, None);
+        assert!(rows[0]
+            .text
+            .contains("WARNING: missing no_new_privs means privilege gain is possible"));
+        let mut app = App::new();
+        assert!(status_line(&app, &model)
+            .contains("WARNING: missing no_new_privs means privilege gain is possible"));
+        app.selected = Some(RowKind::Domain(id));
+        let detail = detail_lines(&app, &model, 120)
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(detail.contains("WARNING: missing no_new_privs means privilege gain is possible"));
+        assert!(!detail.contains("capability"));
+        assert!(!detail.contains("escape"));
+
+        model.observe(&Event::FreeDomain(FreeDomainEvent::new(
+            KernelTimestamp::from_nanoseconds(2),
+            id,
+            0,
+        )));
+        assert!(!domain_rows(&model, None)[0].text.contains("WARNING"));
+        assert!(!status_line(&app, &model).contains("missing no_new_privs means"));
+        let detail = detail_lines(&app, &model, 120)
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(detail
+            .contains("historical observation: missing no_new_privs; privilege gain was possible"));
+        assert!(!detail.contains("WARNING"));
     }
 
     #[test]

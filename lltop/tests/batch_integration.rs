@@ -11,7 +11,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use landlock::{AccessFs, Ruleset, RulesetAttr, Scope};
+use landlock::{AccessFs, RestrictSelfAttr, Ruleset, RulesetAttr, RulesetCreatedAttr, Scope};
 use tempfile::TempDir;
 use wait_timeout::ChildExt;
 
@@ -314,11 +314,29 @@ fn scenario_helper() -> Result<(), Box<dyn Error>> {
     let mut target = Target::spawn()?;
     let target_pid = target.child.id();
 
+    // Create the sibling before restrict_self() sets no_new_privs. Otherwise
+    // clone inheritance could hide a broken TSYNC propagation path.
+    let (sibling_ready_tx, sibling_ready_rx) = mpsc::sync_channel(1);
+    let (sibling_done_tx, sibling_done_rx) = mpsc::sync_channel(1);
+    let sibling = thread::spawn(move || {
+        sibling_ready_tx.send(()).unwrap();
+        sibling_done_rx.recv().unwrap();
+    });
+    sibling_ready_rx.recv_timeout(DEADLINE)?;
+
     let status = Ruleset::default()
         .handle_access(AccessFs::ReadFile)?
         .scope(Scope::Signal)?
         .create()?
-        .restrict_self()?;
+        .all_threads(true)?
+        .no_new_privs(true)
+        .restrict_self();
+    sibling_done_tx.send(())?;
+    sibling.join().map_err(|_| "TSYNC sibling panicked")?;
+    let status = status?;
+    if !status.all_threads {
+        return Err(format!("ruleset was not synchronized to all threads: {status:?}").into());
+    }
     if status.ruleset != landlock::RulesetStatus::FullyEnforced {
         return Err(format!("ruleset was not fully enforced: {status:?}").into());
     }
@@ -421,7 +439,7 @@ fn parse_record(line: &str) -> Result<Record, Box<dyn Error>> {
     let kind = line.split_whitespace().next().ok_or("empty lltop record")?;
     let fields = named_fields_for_record(line, kind == "STATS")?;
     let required: &[&str] = match kind {
-        "DOMAIN" => &["domain", "parent", "ruleset", "creator"],
+        "DOMAIN" => &["domain", "parent", "ruleset", "creator", "no_new_privs"],
         "DROP_RULESET" => &["ruleset"],
         "DENIAL" => &[
             "type",
@@ -448,6 +466,14 @@ fn parse_record(line: &str) -> Result<Record, Box<dyn Error>> {
         if !fields.contains_key(*name) {
             return Err(format!("missing {name} in {line:?}").into());
         }
+    }
+    if kind == "DOMAIN"
+        && !matches!(
+            fields.get("no_new_privs").map(String::as_str),
+            Some("0" | "1" | "?")
+        )
+    {
+        return Err(format!("invalid no_new_privs in {line:?}").into());
     }
     if kind == "DENIAL" {
         let relational_fields = [
@@ -567,11 +593,13 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
     let mut pending_stats_kind = None;
     let mut correlated_stats = 0;
     let mut domain_deallocation_seen = false;
+    let mut no_new_privs_seen = false;
     while !(duplicate_counts == [1, 2]
         && distinct_seen
         && signal_seen
         && ruleset_dropped
         && domain_deallocation_seen
+        && no_new_privs_seen
         && correlated_stats == 4)
     {
         let (stream, line) = monitor.recv_before(deadline)?;
@@ -588,17 +616,23 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
             "DOMAIN" => {
                 if record.fields["creator"].ends_with(&format!("[{scenario_pid}]")) {
                     domain = Some(record.fields["domain"].clone());
-                    ruleset = Some(record.fields["ruleset"].clone());
-                    let (ruleset_id, version) = record.fields["ruleset"]
-                        .split_once('.')
-                        .ok_or("invalid scenario ruleset identity")?;
                     if record.fields["parent"] != "0"
                         || u64::from_str_radix(&record.fields["domain"], 16)? == 0
-                        || u64::from_str_radix(ruleset_id, 16)? == 0
-                        || version.parse::<u32>().is_err()
                     {
                         return Err(format!("incomplete scenario domain: {record:?}").into());
                     }
+                    if record.fields["ruleset"] != "?" {
+                        let (ruleset_id, version) = record.fields["ruleset"]
+                            .split_once('.')
+                            .ok_or("invalid scenario ruleset identity")?;
+                        if u64::from_str_radix(ruleset_id, 16)? == 0
+                            || version.parse::<u32>().is_err()
+                        {
+                            return Err(format!("invalid scenario ruleset: {record:?}").into());
+                        }
+                        ruleset = Some(record.fields["ruleset"].clone());
+                    }
+                    no_new_privs_seen |= record.fields["no_new_privs"] == "1";
                 }
             }
             "DROP_RULESET" if ruleset.as_ref() == Some(&record.fields["ruleset"]) => {

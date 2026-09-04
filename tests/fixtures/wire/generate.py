@@ -112,7 +112,7 @@ def encoded_fixtures(byte_order: str, suffix: str) -> dict[str, bytes]:
 
     data = record(12, 0xCC0000000000000C, byte_order)
     u64(data, 16, 0xDC0000000000000C, byte_order); u32(data, 24, 0xCD00000C, byte_order)
-    data[28] = 1; data[29] = 0
+    data[28] = 1; data[29] = 0; data[30] = 1
     out[f"12-domain-enforce-{suffix}.bin"] = bytes(data)
 
     return out

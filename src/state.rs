@@ -372,6 +372,20 @@ impl DomainState {
         self.enforcement_events.len()
     }
 
+    /// Returns the weakest observed latest-per-thread `no_new_privs` fact.
+    ///
+    /// `None` means no enforcement was observed. Once observations exist,
+    /// `Some(true)` means every latest per-TID observation had `no_new_privs`
+    /// set, while one latest observation without it yields `Some(false)`.
+    /// Observed TIDs are not a live-thread census.
+    pub fn no_new_privs(&self) -> Option<bool> {
+        (!self.enforcement_events.is_empty()).then(|| {
+            self.enforcement_events
+                .values()
+                .all(EnforceDomainEvent::no_new_privs)
+        })
+    }
+
     /// Returns whether any observed enforcement event was process-wide.
     pub const fn any_process_wide_enforcement(&self) -> bool {
         self.any_process_wide_enforcement
@@ -872,6 +886,7 @@ mod tests {
                 101,
                 false,
                 false,
+                true,
             )),
         );
 
@@ -879,6 +894,7 @@ mod tests {
         assert_eq!(root.lifecycle(), LifecycleState::Allocated);
         assert_eq!(root.creation_timestamp(), Some(timestamp(10)));
         assert_eq!(root.parent(), Some(DomainParent::Root));
+        assert_eq!(root.no_new_privs(), None);
         assert_eq!(root.creator_tgid(), Some(100));
         assert_eq!(root.creator_comm().unwrap().as_bytes(), b"creator");
         assert_eq!(
@@ -1161,6 +1177,7 @@ mod tests {
                 1,
                 true,
                 true,
+                true,
             )),
         );
         apply(
@@ -1190,16 +1207,40 @@ mod tests {
     fn enforcement_keeps_latest_per_tid_and_survives_deallocation() {
         let mut state = State::new();
         let id = DomainId::new(50);
+        assert!(state.domain(id).is_none());
         for event in [
-            Event::EnforceDomain(EnforceDomainEvent::new(timestamp(20), id, 100, true, true)),
+            Event::EnforceDomain(EnforceDomainEvent::new(
+                timestamp(20),
+                id,
+                100,
+                true,
+                true,
+                true,
+            )),
+            Event::EnforceDomain(EnforceDomainEvent::new(
+                timestamp(10),
+                id,
+                100,
+                false,
+                false,
+                false,
+            )),
             Event::EnforceDomain(EnforceDomainEvent::new(
                 timestamp(25),
                 id,
                 100,
                 false,
                 false,
+                false,
             )),
-            Event::EnforceDomain(EnforceDomainEvent::new(timestamp(10), id, 100, true, false)),
+            Event::EnforceDomain(EnforceDomainEvent::new(
+                timestamp(10),
+                id,
+                100,
+                true,
+                false,
+                true,
+            )),
         ] {
             apply(&mut state, event);
         }
@@ -1209,13 +1250,21 @@ mod tests {
         assert!(state.domain(id).unwrap().any_process_wide_enforcement());
 
         for event in [
-            Event::EnforceDomain(EnforceDomainEvent::new(timestamp(25), id, 100, true, false)),
+            Event::EnforceDomain(EnforceDomainEvent::new(
+                timestamp(25),
+                id,
+                100,
+                true,
+                false,
+                false,
+            )),
             Event::EnforceDomain(EnforceDomainEvent::new(
                 timestamp(30),
                 id,
                 101,
                 false,
                 false,
+                true,
             )),
             Event::FreeDomain(FreeDomainEvent::new(timestamp(40), id, 0)),
         ] {
@@ -1232,13 +1281,31 @@ mod tests {
         assert_eq!(first.timestamp(), timestamp(25));
         assert!(first.complete());
         assert!(!first.process_wide());
+        assert!(!first.no_new_privs());
         let second = domain.enforcement_event(101).unwrap();
         assert_eq!(second.domain_id(), id);
         assert_eq!(second.enforcing_tid(), 101);
         assert_eq!(second.timestamp(), timestamp(30));
         assert!(!second.complete());
         assert!(!second.process_wide());
+        assert!(second.no_new_privs());
         assert!(domain.any_process_wide_enforcement());
+        assert_eq!(domain.no_new_privs(), Some(false));
+
+        apply(
+            &mut state,
+            Event::EnforceDomain(EnforceDomainEvent::new(
+                timestamp(50),
+                id,
+                100,
+                true,
+                true,
+                true,
+            )),
+        );
+        let domain = state.domain(id).unwrap();
+        assert_eq!(domain.lifecycle(), LifecycleState::Deallocated);
+        assert_eq!(domain.no_new_privs(), Some(true));
     }
 
     #[test]

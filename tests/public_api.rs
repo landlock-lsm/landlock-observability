@@ -68,7 +68,14 @@ fn public_state_enums_are_exhaustive() {
 #[test]
 fn enforcement_accessors_expose_events() {
     let id = DomainId::new(0x1_0000_0001);
-    let event = EnforceDomainEvent::new(KernelTimestamp::from_nanoseconds(9), id, 10, true, false);
+    let event = EnforceDomainEvent::new(
+        KernelTimestamp::from_nanoseconds(9),
+        id,
+        10,
+        true,
+        false,
+        true,
+    );
     let mut state = State::new();
     state.apply(&Event::EnforceDomain(event.clone()));
 
@@ -77,6 +84,8 @@ fn enforcement_accessors_expose_events() {
     assert_eq!(selected, &event);
     let events: Vec<&EnforceDomainEvent> = domain.enforcement_events().collect();
     assert_eq!(selected.domain_id(), id);
+    assert!(selected.no_new_privs());
     assert_eq!(events, vec![selected]);
     assert_eq!(domain.enforcement_event_count(), 1);
+    assert_eq!(domain.no_new_privs(), Some(true));
 }

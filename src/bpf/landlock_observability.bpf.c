@@ -178,7 +178,7 @@ int BPF_PROG(handle_create_domain, const struct landlock_domain *new_dom,
 
 SEC("tp_btf/landlock_enforce_domain")
 int BPF_PROG(handle_enforce_domain, const struct landlock_domain *domain,
-	     bool complete, bool process_wide)
+	     bool complete, bool process_wide, bool no_new_privs)
 {
 	struct landlock_observability_event *ev = alloc_event();
 
@@ -192,6 +192,7 @@ int BPF_PROG(handle_enforce_domain, const struct landlock_domain *domain,
 	ev->enforce_domain.enforcing_tid = (__u32)bpf_get_current_pid_tgid();
 	ev->enforce_domain.complete = complete;
 	ev->enforce_domain.process_wide = process_wide;
+	ev->enforce_domain.no_new_privs = no_new_privs;
 
 	submit_event(ev);
 	return 0;

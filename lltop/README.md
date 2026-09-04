@@ -67,7 +67,7 @@ worker-stop errors end the process.
 The records are:
 
 ```text
-DOMAIN domain=<hex> parent=<hex|?> ruleset=<hex>.<version>|? creator=<comm>[<tgid>]|?
+DOMAIN domain=<hex> parent=<hex|?> ruleset=<hex>.<version>|? creator=<comm>[<tgid>]|? no_new_privs=<0|1|?>
 DROP_RULESET ruleset=<hex>.<version>
 DENIAL type=<kind> domain=<hex> blockers=<names|hex> target=<summary> count=<n> age=<elapsed> same_exec=<0|1> logged=<0|1> [<tracee_domain|target_domain|peer_domain>=<hex>]
 STATS domains=<allocated>/<total> denials=<n> (fs=<n> net=<n> ptrace=<n> signal=<n> abstract_unix=<n>)
@@ -76,9 +76,14 @@ STATS domains=<allocated>/<total> denials=<n> (fs=<n> net=<n> ptrace=<n> signal=
 `DENIAL` types are `FS`, `NET`, `PTRACE`, `SIGNAL`, and `ABSTRACT_UNIX`.
 IDs are lowercase hexadecimal without `0x`; ruleset versions and all counters
 are decimal. A root domain has `parent=0`, while `?` means the observer did not
-learn the value. `tracee_domain`, `target_domain`, and `peer_domain` occur on
-ptrace, signal, and abstract UNIX socket denials respectively; their value is
-`0` when the tracee, target, or peer was unsandboxed.
+learn the value. `no_new_privs=?` means no enforcement has been observed, `1`
+means all latest per-observed-TID enforcement values have it set, and `0` means
+at least one latest observed value lacks it. This is weakest-wins observed state,
+not a live-thread ratio. Missing `no_new_privs` means privilege gain is possible;
+lltop does not infer a particular capability or claim an escape from a Landlock
+domain. `tracee_domain`, `target_domain`, and `peer_domain` occur on ptrace,
+signal, and abstract UNIX socket denials respectively; their value is `0` when
+the tracee, target, or peer was unsandboxed.
 
 Known blockers use kernel semantic names (`FS:read_file`,
 `Net:connect_tcp`, `ptrace`, `Scope:signal`, or
@@ -105,6 +110,12 @@ are independent saturating observed-event counters. Domain allocated/total
 values come from reconstructed state; total includes unknown placeholders and
 deallocated objects. Collection is partial as described by the root README, so
 these values are observations rather than an audit log.
+
+The Domains TUI shows the same weakest-wins fact. Domain details distinguish
+unknown, all-latest-observed values set, and the exact warning `WARNING:
+missing no_new_privs means privilege gain is possible`; warned active-domain rows and
+the global status use the same wording. Freed-domain details retain the
+historical observed fact without presenting a live status warning.
 
 ## Testing
 

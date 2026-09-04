@@ -779,6 +779,7 @@ pub struct EnforceDomainEvent {
     enforcing_tid: u32,
     complete: bool,
     process_wide: bool,
+    no_new_privs: bool,
 }
 impl EnforceDomainEvent {
     /// Creates this semantic value from its captured fields.
@@ -788,6 +789,7 @@ impl EnforceDomainEvent {
         enforcing_tid: u32,
         complete: bool,
         process_wide: bool,
+        no_new_privs: bool,
     ) -> Self {
         Self {
             timestamp,
@@ -795,6 +797,7 @@ impl EnforceDomainEvent {
             enforcing_tid,
             complete,
             process_wide,
+            no_new_privs,
         }
     }
     /// Returns the kernel-assigned domain identity.
@@ -814,6 +817,10 @@ impl EnforceDomainEvent {
     /// Returns whether eligible sibling threads were covered or none existed.
     pub const fn process_wide(&self) -> bool {
         self.process_wide
+    }
+    /// Returns whether the enforcing thread had `no_new_privs` set.
+    pub const fn no_new_privs(&self) -> bool {
+        self.no_new_privs
     }
 }
 common_event!(EnforceDomainEvent);

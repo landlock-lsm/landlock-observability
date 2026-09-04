@@ -64,7 +64,8 @@ struct landlock_observability_event {
 			__u32 enforcing_tid;
 			__u8 complete;
 			__u8 process_wide;
-			__u8 _pad[2];
+			__u8 no_new_privs;
+			__u8 _pad[1];
 		} enforce_domain;
 		struct {
 			__u64 domain_id;
@@ -220,7 +221,8 @@ ASSERT_FIELD(enforce_domain.domain_id, 16, 8);
 ASSERT_FIELD(enforce_domain.enforcing_tid, 24, 4);
 ASSERT_FIELD(enforce_domain.complete, 28, 1);
 ASSERT_FIELD(enforce_domain.process_wide, 29, 1);
-ASSERT_FIELD(enforce_domain._pad, 30, 2);
+ASSERT_FIELD(enforce_domain.no_new_privs, 30, 1);
+ASSERT_FIELD(enforce_domain._pad, 31, 1);
 #define ASSERT_DENIAL_HEADER(variant)               \
 	ASSERT_FIELD(variant.domain_id, 16, 8);     \
 	ASSERT_FIELD(variant.parent_id, 24, 8);     \

@@ -51,7 +51,7 @@ immediately flushed records to standard output when relevant reconstructed
 state changes:
 
 ```text
-DOMAIN domain=<hex> parent=<hex|?> ruleset=<hex>.<version>|? creator=<comm>[<tgid>]|?
+DOMAIN domain=<hex> parent=<hex|?> ruleset=<hex>.<version>|? creator=<comm>[<tgid>]|? no_new_privs=<0|1|?>
 DROP_RULESET ruleset=<hex>.<version>
 DENIAL type=<kind> domain=<hex> blockers=<names|hex> target=<summary> count=<n> age=<elapsed> same_exec=<0|1> logged=<0|1> [<tracee_domain|target_domain|peer_domain>=<hex>]
 STATS domains=<allocated>/<total> denials=<n> (fs=<n> net=<n> ptrace=<n> signal=<n> abstract_unix=<n>)
@@ -61,7 +61,14 @@ STATS domains=<allocated>/<total> denials=<n> (fs=<n> net=<n> ptrace=<n> signal=
 IDs use lowercase hexadecimal without `0x`; `?` means unknown. Relational
 `tracee_domain`, `target_domain`, and `peer_domain` identify the other party for
 ptrace, signal, and abstract UNIX socket denials respectively; a value of `0`
-means that party was unsandboxed. Kernel-captured bytes outside ASCII letters,
+means that party was unsandboxed. The domain-level `no_new_privs` field is
+unknown before an enforcement observation and uses weakest-wins semantics over
+the latest observation for each observed enforcing TID: `1` only when all such
+observations have it set, and `0` when any lacks it. Observed TIDs are not a
+live-thread census, so no ratio is reported. Missing `no_new_privs` means
+privilege gain is possible; this does not identify a capability used to enforce
+the domain or claim an escape from a Landlock domain. Kernel-captured bytes
+outside ASCII letters,
 digits, `_`, `-`, `.`, and `/` are unambiguously escaped as lowercase `\xNN`.
 Unknown access bits remain numeric. Every `target` summary is one
 whitespace-free token; separators captured within paths or command names remain
@@ -146,7 +153,9 @@ other kernel-side loss.
   a complete kernel snapshot and does not retain individual denials. It has no
   capacity or eviction policy and retains reconstructed rulesets, domains,
   rules, and one enforcement event per observed TID per domain until dropped,
-  so memory can grow without a configured bound.
+  so memory can grow without a configured bound. Enforcement events retain
+  their `no_new_privs` values and expose the domain's weakest selected value
+  without treating observed TIDs as a live-thread census.
 * `aggregate::DenialAggregator` is optional.  It has an exact configurable
   capacity (1000 by default), groups denials by their semantic domain/blocker/
   target key, refreshes recency on every matching observation, and evicts the
