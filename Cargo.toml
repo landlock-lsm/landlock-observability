@@ -28,4 +28,5 @@ nix = { version = "0.31", default-features = false, features = [
 wait-timeout = "0.2.1"
 
 [workspace]
+members = ["lltop"]
 resolver = "2"

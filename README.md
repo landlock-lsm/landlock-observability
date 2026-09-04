@@ -41,6 +41,34 @@ build-time requirements; Python and bpftool are used only by maintainer checks.
 cargo build --locked
 ```
 
+The project also provides
+[lltop](https://github.com/landlock-lsm/landlock-observability/tree/main/lltop),
+a batch monitor built only from landlock-observability and the standard library.
+After satisfying the runtime requirements below, run it explicitly with
+`lltop --batch`. It reports
+collector readiness as `LLTOP_READY` on flushed standard error, then writes
+immediately flushed records to standard output when relevant reconstructed
+state changes:
+
+```text
+DOMAIN domain=<hex> parent=<hex|?> ruleset=<hex>.<version>|? creator=<comm>[<tgid>]|?
+DROP_RULESET ruleset=<hex>.<version>
+DENIAL type=<kind> domain=<hex> blockers=<names|hex> target=<summary> count=<n> age=<elapsed> same_exec=<0|1> logged=<0|1> [<tracee_domain|target_domain|peer_domain>=<hex>]
+STATS domains=<allocated>/<total> denials=<n> (fs=<n> net=<n> ptrace=<n> signal=<n> abstract_unix=<n>)
+```
+
+`DENIAL` types are `FS`, `NET`, `PTRACE`, `SIGNAL`, and `ABSTRACT_UNIX`.
+IDs use lowercase hexadecimal without `0x`; `?` means unknown. Relational
+`tracee_domain`, `target_domain`, and `peer_domain` identify the other party for
+ptrace, signal, and abstract UNIX socket denials respectively; a value of `0`
+means that party was unsandboxed. Kernel-captured bytes outside ASCII letters,
+digits, `_`, `-`, `.`, and `/` are unambiguously escaped as lowercase `\xNN`.
+Unknown access bits remain numeric. Every `target` summary is one
+whitespace-free token; separators captured within paths or command names remain
+byte-escaped. The complete protocol—including target summaries, access-name
+categories, counter semantics, age formatting, and readiness ordering—is
+specified in the lltop README.
+
 A normal `cargo test --locked` run does not load BPF.  The `kernel_events`
 integration test is explicitly ignored in normal Cargo runs because it requires
 the pinned landlock-test-tools x86_64 guest.  After building and locating the

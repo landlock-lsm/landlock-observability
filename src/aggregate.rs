@@ -361,19 +361,29 @@ impl DenialAggregator {
     /// refreshes least-recently-observed recency. Inserting a new key while full
     /// evicts the key whose matching event was ingested least recently.
     pub fn observe(&mut self, event: &Event) {
-        let Some((key, same_exec, logged)) = denial_facts(event) else {
-            return;
-        };
+        let _ = self.observe_entry(event);
+    }
+
+    /// Observes an event and returns the affected retained entry for a denial.
+    ///
+    /// Non-denial events and [`Event::Unknown`] return `None`. The returned
+    /// entry already contains the current observation.
+    pub fn observe_entry(&mut self, event: &Event) -> Option<&AggregatedDenial> {
+        let (key, same_exec, logged) = denial_facts(event)?;
         let sequence = self.next_ingestion_sequence();
 
-        if let Some(entry) = self.entries.get_mut(&key) {
+        if self.entries.contains_key(&key) {
+            let entry = self
+                .entries
+                .get_mut(&key)
+                .expect("a checked aggregation entry remains present");
             entry.occurrence_count = entry.occurrence_count.saturating_add(1);
             entry.latest_timestamp = event.timestamp();
             entry.same_exec = same_exec;
             entry.logged = logged;
             entry.latest_event = event.clone();
             entry.last_observed_sequence = sequence;
-            return;
+            return Some(entry);
         }
 
         if self.entries.len() == self.capacity {
@@ -386,19 +396,16 @@ impl DenialAggregator {
             self.entries.remove(&least_recent_key);
         }
 
-        self.entries.insert(
-            key.clone(),
-            AggregatedDenial {
-                key,
-                occurrence_count: 1,
-                first_timestamp: event.timestamp(),
-                latest_timestamp: event.timestamp(),
-                same_exec,
-                logged,
-                latest_event: event.clone(),
-                last_observed_sequence: sequence,
-            },
-        );
+        Some(self.entries.entry(key.clone()).or_insert(AggregatedDenial {
+            key,
+            occurrence_count: 1,
+            first_timestamp: event.timestamp(),
+            latest_timestamp: event.timestamp(),
+            same_exec,
+            logged,
+            latest_event: event.clone(),
+            last_observed_sequence: sequence,
+        }))
     }
 
     fn next_ingestion_sequence(&mut self) -> u128 {
@@ -665,9 +672,7 @@ mod tests {
         let mut aggregator = DenialAggregator::new();
         aggregator.observe(&first);
         aggregator.observe(&latest);
-        aggregator.observe(&equal);
-
-        let entry = aggregator.entries().next().unwrap();
+        let entry = aggregator.observe_entry(&equal).unwrap();
         assert_eq!(entry.occurrence_count(), 3);
         assert_eq!(entry.first_timestamp().as_nanoseconds(), 50);
         assert_eq!(entry.latest_timestamp().as_nanoseconds(), 40);

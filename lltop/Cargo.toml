@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[package]
+name = "lltop"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/landlock-lsm/landlock-observability"
+description = "Batch monitor for Landlock"
+readme = "README.md"
+keywords = ["landlock", "linux", "security", "observability", "bpf"]
+categories = ["os::linux-apis", "command-line-utilities"]
+
+[dependencies]
+landlock-observability = { path = "..", version = "0.0.0" }
