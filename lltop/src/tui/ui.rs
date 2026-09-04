@@ -18,6 +18,23 @@ use super::format;
 use super::model::{domain_ruleset, ObservationModel};
 use super::theme;
 
+const AUDIT_VISIBLE_ICON: &str = "🔔";
+const TRACE_ONLY_ICON: &str = "🔕";
+
+fn visibility(logged: bool) -> (&'static str, &'static str) {
+    if logged {
+        (AUDIT_VISIBLE_ICON, "audit-visible")
+    } else {
+        (TRACE_ONLY_ICON, "trace-only")
+    }
+}
+
+fn denial_row_text(count: u64, visibility: &str, target: &str) -> (String, usize) {
+    let prefix = format!("    {count:>6} {visibility}  ");
+    let continuation_indent = format::display_width(&prefix);
+    (format!("{prefix}{target}"), continuation_indent)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Tab {
     Domains,
@@ -169,6 +186,7 @@ struct DisplayRow {
     kind: RowKind,
     text: String,
     style: Style,
+    continuation_indent: Option<usize>,
 }
 
 fn viewport_scroll(
@@ -293,8 +311,9 @@ fn draw_list(frame: &mut Frame<'_>, area: Rect, app: &mut App, rows: Vec<Display
                 .chars()
                 .take_while(|character| *character == ' ')
                 .count();
-            let continuation = content_start
-                .saturating_add(4)
+            let continuation = row
+                .continuation_indent
+                .unwrap_or_else(|| content_start.saturating_add(4))
                 .min(content_width.saturating_sub(1));
             format::wrap(
                 &row.text,
@@ -311,6 +330,7 @@ fn draw_list(frame: &mut Frame<'_>, area: Rect, app: &mut App, rows: Vec<Display
                     format!("{}{text}", " ".repeat(continuation))
                 },
                 style: row.style,
+                continuation_indent: row.continuation_indent,
             })
         })
         .collect::<Vec<_>>();
@@ -401,6 +421,7 @@ fn domain_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Disp
                     tree_prefix(&trail),
                     format::hex_id(id.get())
                 ),
+                continuation_indent: None,
             })
         })
         .collect()
@@ -431,6 +452,7 @@ fn denial_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Disp
                 kind: RowKind::Heading,
                 text: String::new(),
                 style: theme::normal(),
+                continuation_indent: None,
             });
         }
         let kind = RowKind::DenialDomain(domain);
@@ -452,6 +474,7 @@ fn denial_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Disp
             ),
             kind,
             text: format!("Domain {} ({creator})", format::hex_id(domain.get())),
+            continuation_indent: None,
         });
         let mut groups: HashMap<String, Vec<&AggregatedDenial>> = HashMap::new();
         for entry in entries {
@@ -469,6 +492,7 @@ fn denial_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Disp
                 kind: RowKind::Heading,
                 text: format!("  {label}"),
                 style: theme::heading(),
+                continuation_indent: None,
             });
             entries.sort_by(|a, b| {
                 b.occurrence_count()
@@ -482,11 +506,7 @@ fn denial_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Disp
             });
             for entry in entries {
                 let key = RowKind::Denial(entry.key().clone());
-                let visibility = if entry.logged() {
-                    "audit-visible"
-                } else {
-                    "trace-only"
-                };
+                let (visibility, _) = visibility(entry.logged());
                 let mut style = theme::recency(model.denial_age_ns(entry));
                 if selected_target
                     .as_ref()
@@ -496,14 +516,13 @@ fn denial_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Disp
                     style = style.patch(theme::related());
                 }
                 style = selected_style(&key, selected, style);
+                let (text, continuation_indent) =
+                    denial_row_text(entry.occurrence_count(), visibility, &target(entry));
                 rows.push(DisplayRow {
                     kind: key,
-                    text: format!(
-                        "    {:>6} {visibility}  {}",
-                        entry.occurrence_count(),
-                        target(entry)
-                    ),
+                    text,
                     style,
+                    continuation_indent: Some(continuation_indent),
                 });
             }
         }
@@ -532,6 +551,7 @@ fn ruleset_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Dis
                     ruleset.filesystem_rule_count() + ruleset.network_rule_count(),
                     lifecycle(ruleset.lifecycle())
                 ),
+                continuation_indent: None,
             }
         })
         .collect()
@@ -706,12 +726,10 @@ fn detail_lines(app: &App, model: &ObservationModel, width: usize) -> Vec<Line<'
                 ));
                 fields.push((
                     "Logged: ".into(),
-                    if entry.logged() {
-                        "audit-visible"
-                    } else {
-                        "trace-only"
-                    }
-                    .into(),
+                    {
+                        let (marker, label) = visibility(entry.logged());
+                        format!("{marker} {label}")
+                    },
                     if entry.logged() {
                         theme::observed()
                     } else {
@@ -1114,8 +1132,49 @@ mod tests {
         let rows = denial_rows(&model, None);
         assert!(rows[0].text.starts_with("Domain 2 ("));
         assert!(!rows[0].text.contains("denials="));
-        assert!(rows.iter().any(|row| row.text.contains("audit-visible")));
-        assert!(rows.iter().any(|row| row.text.contains("trace-only")));
+        assert!(rows.iter().any(|row| row.text.contains(AUDIT_VISIBLE_ICON)));
+        assert!(rows.iter().any(|row| row.text.contains(TRACE_ONLY_ICON)));
+    }
+
+    #[test]
+    fn visibility_column_is_two_cells_and_target_continuations_align() {
+        let (audit_marker, _) = visibility(true);
+        let (trace_marker, _) = visibility(false);
+        assert_eq!(Line::from(audit_marker).width(), 2);
+        assert_eq!(Line::from(trace_marker).width(), 2);
+
+        let mut model = ObservationModel::new();
+        model.observe(&denial(1, 1, 1, 1));
+        model.observe(&denial(1, 2, 2, 2));
+        let rows = denial_rows(&model, None);
+        let trace = rows.iter().find(|row| row.text.contains("/p/1")).unwrap();
+        let audit = rows.iter().find(|row| row.text.contains("/p/2")).unwrap();
+        let trace_prefix = trace.text.split_once("/p/1").unwrap().0;
+        let audit_prefix = audit.text.split_once("/p/2").unwrap().0;
+
+        assert_eq!(Line::from(trace_prefix).width(), 15);
+        assert_eq!(Line::from(audit_prefix).width(), 15);
+        assert_eq!(trace.continuation_indent, Some(15));
+        assert_eq!(audit.continuation_indent, Some(15));
+
+        let (wide_count, wide_indent) = denial_row_text(1_000_000, TRACE_ONLY_ICON, "/wide/count");
+        let wide_prefix = wide_count.split_once("/wide/count").unwrap().0;
+        assert_eq!(format::display_width(wide_prefix), wide_indent);
+        assert_eq!(wide_indent, 16);
+
+        let mut app = App::new();
+        app.selected = Some(trace.kind.clone());
+        let detail = detail_lines(&app, &model, 80)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content)
+                    .collect::<String>()
+            })
+            .find(|line| line.starts_with("Logged: "))
+            .unwrap();
+        assert_eq!(detail, "Logged: 🔕 trace-only");
     }
 
     #[test]
@@ -1139,7 +1198,10 @@ mod tests {
         ] {
             let row = rows
                 .iter()
-                .find(|row| row.text.contains(&format!("trace-only  /p/{inode}")))
+                .find(|row| {
+                    let (marker, _) = visibility(false);
+                    row.text.contains(&format!("{marker}  /p/{inode}"))
+                })
                 .unwrap();
             assert_eq!(row.style, expected);
         }
