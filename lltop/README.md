@@ -78,3 +78,23 @@ are independent saturating observed-event counters. Domain allocated/total
 values come from reconstructed state; total includes unknown placeholders and
 deallocated objects. Collection is partial as described by the root README, so
 these values are observations rather than an audit log.
+
+## Testing
+
+Normal workspace test runs exercise formatting and protocol behavior without
+loading BPF. The end-to-end `batch_integration` test is explicitly ignored
+because it needs the fixed ABI 11 x86_64 guest and BPF privileges. It launches
+the Cargo-built `lltop --batch` binary without a terminal, waits for
+`LLTOP_READY`, and runs a hermetic Landlock scenario:
+
+```console
+./landlock-test-tools/x86-run.sh /path/to/bzImage -- \
+  env LANDLOCK_CRATE_TEST_ABI=11 /path/to/batch_integration-test \
+  --ignored --exact batch_integration --test-threads 1
+```
+
+A missing or different ABI value is an error. Running the ignored test directly
+on a normal host is not supported. The fixed-kernel workflow builds and locates
+the exact test once on the host. Cargo builds `lltop` for the integration test
+and embeds its exact path, then the workflow invokes the test directly in a
+fresh guest through the pinned x86 runner.
