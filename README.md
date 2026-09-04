@@ -43,9 +43,9 @@ cargo build --locked
 
 The project also provides
 [lltop](https://github.com/landlock-lsm/landlock-observability/tree/main/lltop),
-a batch monitor built only from landlock-observability and the standard library.
-After satisfying the runtime requirements below, run it explicitly with
-`lltop --batch`. It reports
+an interactive and batch monitor. After satisfying the runtime requirements
+below, run `lltop` without arguments for its terminal interface, or run
+`lltop --batch` for the stable line protocol. Batch mode reports
 collector readiness as `LLTOP_READY` on flushed standard error, then writes
 immediately flushed records to standard output when relevant reconstructed
 state changes:

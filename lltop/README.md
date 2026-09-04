@@ -1,24 +1,51 @@
 # lltop
 
-lltop is the batch monitor for Landlock. It uses the landlock-observability
-library to attach the BPF collector,
+lltop is an interactive and batch monitor for Landlock. It uses the
+landlock-observability library to attach the BPF collector,
 reconstruct partial domain and ruleset state, and aggregate repeated denials.
 The minimum supported Rust version is 1.88.
 
-> **Memory-use warning:** Batch mode retains reconstructed `State`, which
-> currently has no capacity or eviction policy. Memory can grow without a
-> configured bound in a long-running process. Configurable retention limits and
-> eviction are planned but are not implemented yet; the bounded collector queue
-> and denial aggregator do not bound `State`.
+> **Memory-use warning:** Interactive and batch modes retain reconstructed
+> `State`, which currently has no capacity or eviction policy. Memory can grow
+> without a configured bound in a long-running process. Configurable retention
+> limits and eviction are planned but are not implemented yet; the bounded
+> collector queue and denial aggregator do not bound `State`.
 
 The collector has the runtime requirements documented in the root README. In
 particular, starting it normally requires root or suitable BPF and tracing
 capabilities. The dependency embeds a separately executing GPL-2.0-only BPF
 program; lltop itself is available under MIT or Apache-2.0.
 
+## Interactive mode
+
+Run `sudo lltop` without arguments to open the terminal interface. Its Domains,
+Denials, Rulesets, and Stats tabs preserve selection by semantic object identity
+while live observations reorder rows. Selecting a row opens a 40/60 list and
+detail split; Enter on a domain follows its known frozen ruleset. Partial
+late-start objects and deallocated tombstones remain visible.
+
+Use `1`–`4` or Tab to change tabs, Up/Down to select, `p` to pause collector
+polling, Enter to follow, and `q` to quit. Esc first closes details and then
+quits. Mouse clicks select tabs and rows, the wheel moves three rows, and the
+scrollbar can be dragged. Manual scrolling may move the selection off-screen;
+Up/Down selection resumes following it. Mouse setup has no terminal
+acknowledgement; its local write and flush result is ignored so keyboard
+operation does not depend on mouse setup.
+
+Denials are grouped by domain, blocked access, and semantic target. Groups and
+targets prioritize impact and recency. `audit-visible` and `trace-only` report
+the kernel's `logged` decision directly. Recency styling is based on the newest
+kernel timestamp seen, with bands below 1, 5, and 30 seconds. All captured
+strings are escaped before display, and long values wrap at comma-space, slash,
+or space boundaries with indented continuations.
+
+Raw mode, alternate-screen state, and attempted mouse reporting are owned by an
+unwind-safe guard and restored on normal exit, errors, and panic. Mouse rollback
+is conservatively armed before the enablement sequence is written.
+
 ## Batch mode
 
-Batch mode is explicit; there is no implicit interactive mode yet:
+Batch mode remains explicit:
 
 ```console
 sudo lltop --batch
