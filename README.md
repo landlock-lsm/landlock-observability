@@ -9,8 +9,9 @@ and optionally aggregate repeated denials.
 This is an observer, not an audit log or a complete snapshot.  Collection starts
 only after the BPF programs attach, events can be lost in the kernel or in the
 bounded userspace delivery queue, and events from different CPUs can arrive in
-an order that does not reflect their timestamps.  Captured strings have fixed
-bounds and report truncation.  Objects created or destroyed outside the
+an order that does not reflect their timestamps. Captured byte values have fixed
+bounds and report precisely whether source bytes were omitted. Objects created
+or destroyed outside the
 observed interval can therefore remain unknown or only partly known.  Consumers
 must not interpret a missing event or an unknown state field as evidence that an
 action or object did not exist.

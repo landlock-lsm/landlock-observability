@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use landlock_observability::event::{
-    CapturedString, FilesystemAccess, KernelTimestamp, NetworkAccess, RulesetId, ScopeAccess,
+    CapturedBytes, CapturedBytesOrigin, FilesystemAccess, KernelTimestamp, NetworkAccess,
+    RulesetId, ScopeAccess,
 };
 use landlock_observability::state::RulesetVersion;
 use ratatui::text::Span;
@@ -13,20 +14,8 @@ pub(super) fn ruleset(id: RulesetId, version: Option<u32>) -> String {
     )
 }
 
-pub(super) fn escape(value: &CapturedString) -> String {
-    let mut escaped = String::new();
-    for byte in value.as_bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/') {
-            escaped.push(char::from(*byte));
-        } else {
-            use std::fmt::Write as _;
-            write!(escaped, "\\x{byte:02x}").expect("writing to a String cannot fail");
-        }
-    }
-    if value.is_truncated() {
-        escaped.push('…');
-    }
-    escaped
+pub(super) fn escape<K: CapturedBytesOrigin>(value: &CapturedBytes<K>) -> String {
+    value.to_string()
 }
 
 fn access<'a>(names: impl Iterator<Item = &'a str>, unknown: u32) -> String {
@@ -139,9 +128,17 @@ mod tests {
     }
 
     #[test]
-    fn escaping_blocks_terminal_control_and_marks_truncation() {
-        let value = CapturedString::new(b"a b,\\\n\x1b\xff".to_vec(), true).unwrap();
-        assert_eq!(escape(&value), "a\\x20b\\x2c\\x5c\\x0a\\x1b\\xff…");
+    fn escaping_blocks_terminal_control_and_marks_omission() {
+        let value = landlock_observability::event::CapturedCommand::new(
+            b"a b,\\\n\x1b\xff".to_vec(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(escape(&value), "a b,\\\\\\u{a}\\u{1b}\\xff");
+
+        let omitted =
+            landlock_observability::event::CapturedPath::new(vec![b'p'; 256], true).unwrap();
+        assert!(escape(&omitted).ends_with('…'));
     }
 
     #[test]

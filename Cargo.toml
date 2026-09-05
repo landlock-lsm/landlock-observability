@@ -14,6 +14,7 @@ categories = ["os::linux-apis"]
 
 [dependencies]
 libbpf-rs = "0.24"
+unicode-general-category = "1.1.0"
 
 [build-dependencies]
 libbpf-cargo = "0.24"

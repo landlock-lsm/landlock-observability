@@ -16,8 +16,9 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::event::{
-    CapturedString, Denial, DenialContext, DomainId, DomainMembership, EnforceDomainEvent, Event,
-    FilesystemAccess, KernelTimestamp, NetworkAccess, Observation, RulesetId, ScopeAccess,
+    CapturedCommand, CapturedPath, Denial, DenialContext, DomainId, DomainMembership,
+    EnforceDomainEvent, Event, FilesystemAccess, KernelTimestamp, NetworkAccess, Observation,
+    RulesetId, ScopeAccess,
 };
 
 /// The observed lifecycle of an object.
@@ -101,7 +102,7 @@ pub struct FilesystemRuleState {
     device: u32,
     inode: u64,
     access_rights: FilesystemAccess,
-    pathname: CapturedString,
+    pathname: CapturedPath,
     pathname_timestamp: KernelTimestamp,
 }
 
@@ -124,7 +125,7 @@ impl FilesystemRuleState {
     /// Returns the path from the latest timestamped observation of this target.
     ///
     /// The path is descriptive and is not part of the rule identity.
-    pub const fn pathname(&self) -> &CapturedString {
+    pub const fn pathname(&self) -> &CapturedPath {
         &self.pathname
     }
 }
@@ -280,7 +281,7 @@ pub struct DomainState {
     creation_timestamp: Option<KernelTimestamp>,
     parent: Option<DomainParent>,
     creator_tgid: Option<u32>,
-    creator_comm: Option<CapturedString>,
+    creator_comm: Option<CapturedCommand>,
     ruleset: Option<RulesetVersion>,
     cumulative_denial_count: Option<u64>,
     final_denial_count: Option<u64>,
@@ -342,7 +343,7 @@ impl DomainState {
     }
 
     /// Returns the captured creator command when known.
-    pub const fn creator_comm(&self) -> Option<&CapturedString> {
+    pub const fn creator_comm(&self) -> Option<&CapturedCommand> {
         self.creator_comm.as_ref()
     }
 
@@ -716,13 +717,14 @@ mod tests {
         DenyScopeSignalEvent, EnforceDomainEvent, FreeDomainEvent, FreeRulesetEvent,
         HierarchySnapshot, UnknownEvent, MIN_LANDLOCK_ID,
     };
+    use crate::event::{CapturedBytes, CapturedBytesOrigin};
 
     fn timestamp(value: u64) -> KernelTimestamp {
         KernelTimestamp::from_nanoseconds(value)
     }
 
-    fn string(value: &[u8]) -> CapturedString {
-        CapturedString::new(value.to_vec(), false).unwrap()
+    fn string<K: CapturedBytesOrigin>(value: &[u8]) -> CapturedBytes<K> {
+        CapturedBytes::new(value.to_vec(), false).unwrap()
     }
 
     fn hierarchy(

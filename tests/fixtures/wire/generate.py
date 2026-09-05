@@ -42,7 +42,7 @@ def denial(
     u64(data, 24, 0 if seed == 5 else 0xA000000000000000 + seed, byte_order)
     u32(data, 32, 0x51000000 + seed, byte_order)
     creator_comm = (
-        b"sixteen-byte-cmd"
+        b"15-byte-command\0"
         if seed == 9
         else f"creator-{seed}\0tail".encode().ljust(16, b"!")
     )
@@ -76,12 +76,13 @@ def encoded_fixtures(byte_order: str, suffix: str) -> dict[str, bytes]:
     data = record(4, 0x4400000000000004, byte_order)
     u64(data, 16, 0xA400000000000004, byte_order); u32(data, 24, 0x45000004, byte_order)
     u64(data, 32, 0xD400000000000004, byte_order); u64(data, 40, 0, byte_order)
-    u32(data, 48, 0x56000004, byte_order); fixed(data, 52, 16, b"sixteen-byte-cmd")
+    u32(data, 48, 0x56000004, byte_order); fixed(data, 52, 16, b"15-byte-command\0")
     out[f"04-domain-create-{suffix}.bin"] = bytes(data)
 
     data = record(5, 0x5500000000000005, byte_order); denial(data, 5, 1, 0, byte_order)
     u32(data, 72, 0x72000005, byte_order); u64(data, 80, 0x8300000000000005, byte_order)
     fixed(data, 88, 256, b"P" * 256)
+    data[76] = 1
     out[f"05-fs-denial-{suffix}.bin"] = bytes(data)
 
     data = record(6, 0x6600000000000006, byte_order); denial(data, 6, 0, 1, byte_order)

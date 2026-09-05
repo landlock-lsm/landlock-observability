@@ -2,6 +2,7 @@
 #ifndef LANDLOCK_OBSERVABILITY_EVENT_H
 #define LANDLOCK_OBSERVABILITY_EVENT_H
 
+/* Kernel command sources are NUL-terminated TASK_COMM_LEN arrays. */
 #define TASK_COMM_LEN 16
 #define PATH_MAX_LEN 256
 #define EVENT_RING_SIZE (256 * 1024)
@@ -39,7 +40,8 @@ struct landlock_observability_event {
 			__u32 ruleset_version;
 			__u32 access_rights;
 			__u32 dev;
-			__u8 _ino_pad[4];
+			__u8 pathname_bytes_omitted;
+			__u8 _ino_pad[3];
 			__u64 ino;
 			char pathname[PATH_MAX_LEN];
 		} add_rule_fs;
@@ -79,7 +81,8 @@ struct landlock_observability_event {
 			__u8 logged;
 			__u8 _pad[2];
 			__u32 dev;
-			__u8 _ino_pad[4];
+			__u8 pathname_bytes_omitted;
+			__u8 _ino_pad[3];
 			__u64 ino;
 			char pathname[PATH_MAX_LEN];
 		} deny_access_fs;
@@ -202,7 +205,8 @@ ASSERT_FIELD(add_rule_fs.ruleset_id, 16, 8);
 ASSERT_FIELD(add_rule_fs.ruleset_version, 24, 4);
 ASSERT_FIELD(add_rule_fs.access_rights, 28, 4);
 ASSERT_FIELD(add_rule_fs.dev, 32, 4);
-ASSERT_FIELD(add_rule_fs._ino_pad, 36, 4);
+ASSERT_FIELD(add_rule_fs.pathname_bytes_omitted, 36, 1);
+ASSERT_FIELD(add_rule_fs._ino_pad, 37, 3);
 ASSERT_FIELD(add_rule_fs.ino, 40, 8);
 ASSERT_FIELD(add_rule_fs.pathname, 48, 256);
 ASSERT_FIELD(add_rule_net.ruleset_id, 16, 8);
@@ -236,7 +240,8 @@ ASSERT_FIELD(enforce_domain._pad, 31, 1);
 	ASSERT_FIELD(variant._pad, 70, 2)
 ASSERT_DENIAL_HEADER(deny_access_fs);
 ASSERT_FIELD(deny_access_fs.dev, 72, 4);
-ASSERT_FIELD(deny_access_fs._ino_pad, 76, 4);
+ASSERT_FIELD(deny_access_fs.pathname_bytes_omitted, 76, 1);
+ASSERT_FIELD(deny_access_fs._ino_pad, 77, 3);
 ASSERT_FIELD(deny_access_fs.ino, 80, 8);
 ASSERT_FIELD(deny_access_fs.pathname, 88, 256);
 ASSERT_DENIAL_HEADER(deny_access_net);
