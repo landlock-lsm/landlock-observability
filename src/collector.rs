@@ -16,7 +16,11 @@ use crate::wire;
 
 mod tracepoint;
 
+#[cfg(not(docsrs_build))]
 const BPF_OBJECT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/landlock_observability.bpf.o"));
+
+#[cfg(docsrs_build)]
+const BPF_OBJECT: &[u8] = &[];
 const DEFAULT_EVENT_CAPACITY: usize = 1024;
 const MIN_EVENT_CAPACITY: usize = 1;
 const MAX_EVENT_CAPACITY: usize = 65_536;

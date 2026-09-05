@@ -49,6 +49,10 @@ access-name tables.  It needs **no kernel source tree, running-kernel headers,
 Python, bpftool, tracefs mount, or privileged BPF loading**.  Those are not
 build-time requirements; Python and bpftool are used only by maintainer checks.
 
+On docs.rs only, BPF object generation is skipped so the complete Rust API can
+be documented without a BPF-capable `clang`.  The documented `Collector` still
+has all target-userspace, kernel, BTF, BPF, and privilege requirements below.
+
 ```console
 cargo build --locked
 ```
