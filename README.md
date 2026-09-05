@@ -6,6 +6,17 @@ exposes typed, semantic events.  Applications can consume the
 event stream directly, reconstruct partial ruleset and domain state,
 and optionally aggregate repeated denials.
 
+## Supported Linux versions
+
+Live collection currently supports upstream Linux v7.3-rc1, the CI baseline,
+and later kernels with all required Landlock tracepoints and BPF/BTF features.
+Earlier upstream kernels and partial backports are unsupported. Older vendor
+kernels with a complete backport may work but are not tested in CI.
+
+> **Pre-release warning:** Until Linux v7.3 is released, its new Landlock
+> tracepoint interface may still change. Later release candidates may therefore
+> require an update to this project.
+
 This is an observer, not an audit log or a complete snapshot.  Collection starts
 only after the BPF programs attach, events can be lost in the kernel or in the
 bounded userspace delivery queue, and events from different CPUs can arrive in
@@ -121,6 +132,14 @@ programs—typically by running as root or with `CAP_BPF` and `CAP_PERFMON`—an
 may still be restricted by kernel lockdown, LSM policy, or BPF-related sysctls.
 Collection does not require the BPF LSM, a bpffs, tracefs, or debugfs mount, a
 kernel source or header tree, clang, bpftool, or Python on the target.
+
+Collector startup optimistically loads the complete tracing interface, so a
+supported kernel pays no compatibility-probe cost.  Only after a
+missing-target-shaped load failure does startup inspect canonical
+`/sys/kernel/btf/vmlinux`.  If that BTF conclusively lacks any generation-1
+target, startup reports `UnsupportedKernel` while retaining the original load
+error as its source.  If diagnosis cannot run or the complete generation is
+present, the authoritative `Load` error is preserved.
 
 Tracepoint attachment is not exclusive.  Each collector loads its own twelve
 program instances and ring-buffer map, and other collectors or tracing tools
