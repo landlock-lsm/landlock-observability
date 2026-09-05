@@ -4,7 +4,8 @@ use std::io::{self, Write};
 
 use landlock_observability::aggregate::{AggregatedDenial, DenialAggregator};
 use landlock_observability::event::{
-    CapturedString, DomainId, DomainMembership, Event, FilesystemAccess, NetworkAccess, RulesetId,
+    CapturedString, Denial, DomainId, DomainMembership, Event, FilesystemAccess, NetworkAccess,
+    RulesetId,
 };
 use landlock_observability::state::{
     DomainParent, DomainState, LifecycleState, RulesetVersion, State,

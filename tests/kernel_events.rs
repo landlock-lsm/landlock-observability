@@ -21,7 +21,7 @@ use landlock::{
 };
 use landlock_observability::collector::Collector;
 use landlock_observability::event::{
-    DenialContext, DomainId, DomainMembership, EnforceDomainEvent, Event, FilesystemAccess,
+    Denial, DenialContext, DomainId, DomainMembership, EnforceDomainEvent, Event, FilesystemAccess,
     NetworkAccess, RulesetId, ScopeAccess,
 };
 use landlock_observability::state::{DomainParent, LifecycleState, RulesetVersion, State};

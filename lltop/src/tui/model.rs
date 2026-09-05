@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use landlock_observability::aggregate::{AggregatedDenial, DenialAggregator, DenialKey};
-use landlock_observability::event::{DomainId, Event, KernelTimestamp, RulesetId};
+use landlock_observability::event::{DomainId, Event, KernelTimestamp, Observation, RulesetId};
 use landlock_observability::state::{DomainParent, DomainState, LifecycleState, State};
 
 const KIND_COUNT: usize = 5;

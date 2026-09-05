@@ -3,8 +3,8 @@
 //! Optional bounded aggregation of Landlock denial events.
 
 use crate::event::{
-    CapturedString, DomainId, DomainMembership, Event, FilesystemAccess, KernelTimestamp,
-    NetworkAccess,
+    CapturedString, Denial, DomainId, DomainMembership, Event, FilesystemAccess, KernelTimestamp,
+    NetworkAccess, Observation,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -106,80 +106,99 @@ impl NetworkDenialKey {
     }
 }
 
-macro_rules! task_denial_key {
-    (
-        $type:ident,
-        $description:literal,
-        $domain:ident,
-        $pid:ident,
-        $comm:ident,
-        $party:literal
-    ) => {
-        #[doc = $description]
-        #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-        #[non_exhaustive]
-        pub struct $type {
-            domain_id: DomainId,
-            $domain: DomainMembership,
-            $pid: u32,
-            $comm: CapturedString,
-        }
-
-        impl $type {
-            /// Creates a task denial key.
-            pub fn new(
-                domain_id: DomainId,
-                $domain: DomainMembership,
-                $pid: u32,
-                $comm: CapturedString,
-            ) -> Self {
-                Self {
-                    domain_id,
-                    $domain,
-                    $pid,
-                    $comm,
-                }
-            }
-
-            /// Returns the denying domain identity.
-            pub const fn domain_id(&self) -> DomainId {
-                self.domain_id
-            }
-
-            #[doc = concat!("Returns whether the ", $party, " was unsandboxed or in a domain.")]
-            pub const fn $domain(&self) -> DomainMembership {
-                self.$domain
-            }
-
-            #[doc = concat!("Returns the thread-group ID of the ", $party, " task.")]
-            pub const fn $pid(&self) -> u32 {
-                self.$pid
-            }
-
-            #[doc = concat!("Returns the captured command name of the ", $party, " task.")]
-            pub const fn $comm(&self) -> &CapturedString {
-                &self.$comm
-            }
-        }
-    };
+/// A ptrace denial aggregation key. The captured tracee command is part of the identity.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub struct PtraceDenialKey {
+    domain_id: DomainId,
+    tracee_domain: DomainMembership,
+    tracee_pid: u32,
+    tracee_comm: CapturedString,
 }
 
-task_denial_key!(
-    PtraceDenialKey,
-    "A ptrace denial aggregation key. The captured tracee command is part of the identity.",
-    tracee_domain,
-    tracee_pid,
-    tracee_comm,
-    "tracee"
-);
-task_denial_key!(
-    SignalDenialKey,
-    "A signal denial aggregation key. The captured target command is part of the identity.",
-    target_domain,
-    target_pid,
-    target_comm,
-    "target"
-);
+impl PtraceDenialKey {
+    /// Creates a ptrace denial key.
+    pub fn new(
+        domain_id: DomainId,
+        tracee_domain: DomainMembership,
+        tracee_pid: u32,
+        tracee_comm: CapturedString,
+    ) -> Self {
+        Self {
+            domain_id,
+            tracee_domain,
+            tracee_pid,
+            tracee_comm,
+        }
+    }
+
+    /// Returns the denying domain identity.
+    pub const fn domain_id(&self) -> DomainId {
+        self.domain_id
+    }
+
+    /// Returns whether the tracee was unsandboxed or in a domain.
+    pub const fn tracee_domain(&self) -> DomainMembership {
+        self.tracee_domain
+    }
+
+    /// Returns the thread-group ID of the tracee task.
+    pub const fn tracee_pid(&self) -> u32 {
+        self.tracee_pid
+    }
+
+    /// Returns the captured command name of the tracee task.
+    pub const fn tracee_comm(&self) -> &CapturedString {
+        &self.tracee_comm
+    }
+}
+
+/// A signal denial aggregation key. The captured target command is part of the identity.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub struct SignalDenialKey {
+    domain_id: DomainId,
+    target_domain: DomainMembership,
+    target_pid: u32,
+    target_comm: CapturedString,
+}
+
+impl SignalDenialKey {
+    /// Creates a signal denial key.
+    pub fn new(
+        domain_id: DomainId,
+        target_domain: DomainMembership,
+        target_pid: u32,
+        target_comm: CapturedString,
+    ) -> Self {
+        Self {
+            domain_id,
+            target_domain,
+            target_pid,
+            target_comm,
+        }
+    }
+
+    /// Returns the denying domain identity.
+    pub const fn domain_id(&self) -> DomainId {
+        self.domain_id
+    }
+
+    /// Returns whether the target was unsandboxed or in a domain.
+    pub const fn target_domain(&self) -> DomainMembership {
+        self.target_domain
+    }
+
+    /// Returns the thread-group ID of the target task.
+    pub const fn target_pid(&self) -> u32 {
+        self.target_pid
+    }
+
+    /// Returns the captured command name of the target task.
+    pub const fn target_comm(&self) -> &CapturedString {
+        &self.target_comm
+    }
+}
 
 /// An abstract UNIX socket denial aggregation key.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
