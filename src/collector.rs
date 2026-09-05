@@ -2,7 +2,8 @@
 
 //! Collection of Landlock events from the embedded BPF programs.
 
-use std::cell::Cell;
+use std::any::Any;
+use std::cell::{Cell, RefCell};
 use std::error::Error;
 use std::fmt;
 use std::mem::MaybeUninit;
@@ -10,7 +11,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use libbpf_rs::RingBufferBuilder;
@@ -28,6 +29,7 @@ const DEFAULT_EVENT_CAPACITY: usize = 1024;
 const MIN_EVENT_CAPACITY: usize = 1;
 const MAX_EVENT_CAPACITY: usize = 65_536;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+const WORKER_FINISH_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 /// The reason a collector configuration could not be built.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,11 +151,25 @@ impl CollectorConfig {
 
     /// Starts a collector and waits for synchronous startup to complete.
     ///
-    /// This may be called repeatedly.  Each call independently opens and loads
-    /// BPF, attaches all programs, creates channels, and spawns a worker.  An
+    /// This may be called repeatedly. Each call independently opens and loads
+    /// BPF, attaches all programs, creates channels, and spawns a worker. An
     /// application that only needs several event processors should normally
-    /// start one collector and fan out decoded events in userspace.
+    /// start one collector and fan out decoded events in userspace. A panic
+    /// before readiness is returned as [`CollectorStartErrorKind::WorkerPanic`].
     pub fn start(&self) -> Result<Collector, CollectorStartError> {
+        self.start_with_worker(run_worker)
+    }
+
+    fn start_with_worker<F>(&self, worker_main: F) -> Result<Collector, CollectorStartError>
+    where
+        F: FnOnce(
+                mpsc::SyncSender<DeliveryEntry>,
+                mpsc::SyncSender<CollectorReceiveError>,
+                Arc<AtomicBool>,
+                mpsc::SyncSender<StartupResult>,
+            ) + Send
+            + 'static,
+    {
         let (delivery_tx, delivery_rx) = mpsc::sync_channel(self.event_capacity);
         let (terminal_tx, terminal_rx) = mpsc::sync_channel(2);
         let (startup_tx, startup_rx) = mpsc::sync_channel(1);
@@ -161,7 +177,9 @@ impl CollectorConfig {
         let worker_running = Arc::clone(&running);
         let worker = thread::Builder::new()
             .name("ll-observe".to_owned())
-            .spawn(move || run_worker(delivery_tx, terminal_tx, worker_running, startup_tx))
+            .spawn(move || {
+                worker_main(delivery_tx, terminal_tx, worker_running, startup_tx);
+            })
             .map_err(|error| CollectorStartError::new(CollectorStartErrorKind::Spawn, error))?;
 
         match startup_rx.recv() {
@@ -173,16 +191,18 @@ impl CollectorConfig {
                 worker: Some(worker),
             }),
             Ok(Err(error)) => {
-                let _ = worker.join();
+                if let Err(payload) = worker.join() {
+                    suppress_panic_payload(payload);
+                }
                 Err(error)
             }
-            Err(error) => {
-                let _ = worker.join();
-                Err(CollectorStartError::new(
+            Err(error) => match worker.join() {
+                Ok(()) => Err(CollectorStartError::new(
                     CollectorStartErrorKind::EarlyWorkerStop,
                     error,
-                ))
-            }
+                )),
+                Err(payload) => Err(worker_start_panic(payload)),
+            },
         }
     }
 }
@@ -211,6 +231,8 @@ pub enum CollectorStartErrorKind {
     RingSetup,
     /// The worker stopped before reporting successful startup.
     EarlyWorkerStop,
+    /// The private collector worker panicked before successful startup.
+    WorkerPanic,
 }
 
 impl CollectorStartErrorKind {
@@ -221,7 +243,7 @@ impl CollectorStartErrorKind {
             Self::Load => "load BPF object",
             Self::Attach => "attach BPF programs",
             Self::RingSetup => "set up BPF ring buffer",
-            Self::EarlyWorkerStop => "complete collector startup",
+            Self::EarlyWorkerStop | Self::WorkerPanic => "complete collector startup",
         }
     }
 }
@@ -230,7 +252,7 @@ impl CollectorStartErrorKind {
 ///
 /// Use [`CollectorStartError::kind()`] to identify the startup stage.
 /// Underlying spawning and libbpf errors remain available through
-/// [`Error::source()`].
+/// [`Error::source()`]. A worker panic has a [`CollectorWorkerPanic`] source.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct CollectorStartError {
@@ -280,6 +302,8 @@ pub enum CollectorReceiveErrorKind {
     OutputQueueFull,
     /// Polling the BPF ring buffer failed and collection terminated.
     PollFailure,
+    /// The private collector worker panicked and collection terminated.
+    WorkerPanic,
     /// The private collector worker has stopped.
     WorkerStop,
 }
@@ -290,6 +314,7 @@ impl CollectorReceiveErrorKind {
             Self::MalformedSample => "decode BPF event sample",
             Self::OutputQueueFull => "deliver entries through the full output queue",
             Self::PollFailure => "poll BPF ring buffer",
+            Self::WorkerPanic => "receive from collector worker",
             Self::WorkerStop => "receive from the stopped collector worker",
         }
     }
@@ -299,8 +324,9 @@ impl CollectorReceiveErrorKind {
 ///
 /// Use [`CollectorReceiveError::kind()`] to identify the failure.  Detailed
 /// decoding and libbpf errors remain available through [`Error::source()`]
-/// without making the private wire format part of the public API.  Source-less
-/// queue and worker-state failures retain a static detail.
+/// without making the private wire format part of the public API. A worker
+/// panic has a [`CollectorWorkerPanic`] source. Source-less queue and
+/// worker-state failures retain a static detail.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct CollectorReceiveError {
@@ -345,6 +371,57 @@ impl Error for CollectorReceiveError {
         self.detail.source()
     }
 }
+
+/// Details captured when the private collector worker panics.
+///
+/// A `String` or `&'static str` panic payload is available through
+/// [`CollectorWorkerPanic::message()`]. Other payload types remain opaque so
+/// private worker implementation details do not become part of the public API.
+/// This error is the source of the corresponding [`CollectorStartError`] or
+/// [`CollectorReceiveError`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct CollectorWorkerPanic {
+    message: Option<String>,
+}
+
+impl CollectorWorkerPanic {
+    /// Returns the panic payload text when it was a `String` or `&'static str`.
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
+    fn from_payload(payload: Box<dyn Any + Send + 'static>) -> Self {
+        let payload = match payload.downcast::<String>() {
+            Ok(message) => {
+                return Self {
+                    message: Some(*message),
+                };
+            }
+            Err(payload) => payload,
+        };
+        match payload.downcast::<&'static str>() {
+            Ok(message) => Self {
+                message: Some((*message).to_owned()),
+            },
+            Err(payload) => {
+                suppress_panic_payload(payload);
+                Self { message: None }
+            }
+        }
+    }
+}
+
+impl fmt::Display for CollectorWorkerPanic {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.message() {
+            Some(message) => write!(formatter, "collector worker panicked: {message}"),
+            None => formatter.write_str("collector worker panicked with an opaque payload"),
+        }
+    }
+}
+
+impl Error for CollectorWorkerPanic {}
 
 /// An error returned by [`Collector::try_recv()`].
 #[derive(Debug)]
@@ -437,6 +514,54 @@ fn worker_stop() -> CollectorReceiveError {
     )
 }
 
+fn suppress_panic_payload(payload: Box<dyn Any + Send + 'static>) {
+    if let Err(secondary_payload) =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload)))
+    {
+        // Dropping an arbitrary secondary payload could start another unwind.
+        std::mem::forget(secondary_payload);
+    }
+}
+
+fn worker_start_panic(payload: Box<dyn Any + Send + 'static>) -> CollectorStartError {
+    CollectorStartError::new(
+        CollectorStartErrorKind::WorkerPanic,
+        CollectorWorkerPanic::from_payload(payload),
+    )
+}
+
+fn worker_receive_panic(payload: Box<dyn Any + Send + 'static>) -> CollectorReceiveError {
+    CollectorReceiveError::new(
+        CollectorReceiveErrorKind::WorkerPanic,
+        CollectorWorkerPanic::from_payload(payload),
+    )
+}
+
+type PanicPayload = Box<dyn Any + Send + 'static>;
+
+fn catch_callback_panic(
+    panic: &RefCell<Option<PanicPayload>>,
+    callback: impl FnOnce() -> i32,
+) -> i32 {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback)) {
+        Ok(result) => result,
+        Err(payload) => {
+            *panic.borrow_mut() = Some(payload);
+            -1
+        }
+    }
+}
+
+fn callback_panicked(panic: &RefCell<Option<PanicPayload>>) -> bool {
+    panic.borrow().is_some()
+}
+
+fn resume_callback_panic(panic: &RefCell<Option<PanicPayload>>) {
+    if let Some(payload) = panic.borrow_mut().take() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
 type Delivery = Result<Event, CollectorReceiveError>;
 
 struct DeliveryEntry {
@@ -457,10 +582,14 @@ type StartupResult = Result<(), CollectorStartError>;
 /// for userspace delivery-queue omissions, not failed BPF ring reservations,
 /// events before program attachment, or other kernel-side loss.
 ///
-/// All libbpf resources live on a private worker thread. Dropping the collector
-/// requests shutdown and joins the worker, thereby detaching every BPF program.
-/// An idle worker checks for shutdown after each poll of at most 100 ms; thread
-/// scheduling and resource destruction do not have a real-time bound.
+/// All libbpf resources live on a private worker thread. An unexpected worker
+/// panic is reported once, after buffered accepted deliveries and any terminal
+/// poll error, where ordinary worker termination would otherwise be reported.
+/// Later receives report [`CollectorReceiveErrorKind::WorkerStop`]. Dropping
+/// the collector requests shutdown and joins the worker without propagating a
+/// panic, thereby detaching every BPF program. An idle worker checks for
+/// shutdown after each poll of at most 100 ms; thread scheduling and resource
+/// destruction do not have a real-time bound.
 #[non_exhaustive]
 pub struct Collector {
     deliveries: mpsc::Receiver<DeliveryEntry>,
@@ -468,6 +597,24 @@ pub struct Collector {
     terminal: mpsc::Receiver<CollectorReceiveError>,
     running: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+}
+
+struct ReceiveDeadline {
+    started: Instant,
+    timeout: Duration,
+}
+
+impl ReceiveDeadline {
+    fn new(timeout: Duration) -> Self {
+        Self {
+            started: Instant::now(),
+            timeout,
+        }
+    }
+
+    fn remaining(&self) -> Duration {
+        self.timeout.saturating_sub(self.started.elapsed())
+    }
 }
 
 impl Collector {
@@ -483,35 +630,45 @@ impl Collector {
         match self.deliveries.try_recv() {
             Ok(entry) => self.unpair(entry).map_err(TryReceiveError::Collector),
             Err(mpsc::TryRecvError::Empty) => self
-                .terminal_now()
+                .terminal_now_nonblocking()
                 .map_or(Err(TryReceiveError::Empty), |error| {
                     Err(TryReceiveError::Collector(error))
                 }),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Err(TryReceiveError::Collector(self.terminal_or_stop()))
-            }
+            Err(mpsc::TryRecvError::Disconnected) => self
+                .terminal_or_stop_nonblocking()
+                .map_or(Err(TryReceiveError::Empty), |error| {
+                    Err(TryReceiveError::Collector(error))
+                }),
         }
     }
 
     /// Waits up to `timeout` for the next event.
     ///
-    /// [`ReceiveTimeoutError::Timeout`] is distinct from collection failures.
-    /// Buffered delivery entries are returned before a terminal poll failure;
-    /// after that failure, subsequent calls report worker termination.
+    /// One monotonic budget covers waiting for a delivery, terminal status,
+    /// and worker completion. [`ReceiveTimeoutError::Timeout`] is distinct
+    /// from collection failures and is returned if worker teardown remains
+    /// unfinished when that budget expires. A worker panic then remains
+    /// available to a later receive. Buffered delivery entries are returned
+    /// before a terminal poll failure; after that failure, a worker panic is
+    /// reported before the ordinary stopped state. Thread scheduling means
+    /// the timeout is not a hard real-time bound.
     pub fn recv_timeout(&mut self, timeout: Duration) -> Result<Event, ReceiveTimeoutError> {
         if let Some(delivery) = self.pending_delivery.take() {
             return delivery.map_err(ReceiveTimeoutError::Collector);
         }
-        match self.deliveries.recv_timeout(timeout) {
+        let deadline = ReceiveDeadline::new(timeout);
+        match self.deliveries.recv_timeout(deadline.remaining()) {
             Ok(entry) => self.unpair(entry).map_err(ReceiveTimeoutError::Collector),
             Err(mpsc::RecvTimeoutError::Timeout) => self
-                .terminal_now()
+                .terminal_now_nonblocking()
                 .map_or(Err(ReceiveTimeoutError::Timeout), |error| {
                     Err(ReceiveTimeoutError::Collector(error))
                 }),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                Err(ReceiveTimeoutError::Collector(self.terminal_or_stop()))
-            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => self
+                .terminal_until(&deadline)
+                .map_or(Err(ReceiveTimeoutError::Timeout), |error| {
+                    Err(ReceiveTimeoutError::Collector(error))
+                }),
         }
     }
 
@@ -527,16 +684,71 @@ impl Collector {
         }
     }
 
-    fn terminal_now(&mut self) -> Option<CollectorReceiveError> {
+    fn terminal_now_nonblocking(&mut self) -> Option<CollectorReceiveError> {
         match self.terminal.try_recv() {
             Ok(error) => Some(error),
-            Err(mpsc::TryRecvError::Disconnected) => Some(worker_stop()),
+            Err(mpsc::TryRecvError::Disconnected) => self.worker_termination_nonblocking(),
             Err(mpsc::TryRecvError::Empty) => None,
         }
     }
 
-    fn terminal_or_stop(&mut self) -> CollectorReceiveError {
-        self.terminal_now().unwrap_or_else(worker_stop)
+    fn terminal_or_stop_nonblocking(&mut self) -> Option<CollectorReceiveError> {
+        match self.terminal.try_recv() {
+            Ok(error) => Some(error),
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => {
+                self.worker_termination_nonblocking()
+            }
+        }
+    }
+
+    fn terminal_until(&mut self, deadline: &ReceiveDeadline) -> Option<CollectorReceiveError> {
+        match self.terminal.try_recv() {
+            Ok(error) => Some(error),
+            Err(mpsc::TryRecvError::Empty) => {
+                match self.terminal.recv_timeout(deadline.remaining()) {
+                    Ok(error) => Some(error),
+                    Err(mpsc::RecvTimeoutError::Timeout) => self.terminal_now_nonblocking(),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        self.worker_termination_until(deadline)
+                    }
+                }
+            }
+            Err(mpsc::TryRecvError::Disconnected) => self.worker_termination_until(deadline),
+        }
+    }
+
+    fn worker_termination_until(
+        &mut self,
+        deadline: &ReceiveDeadline,
+    ) -> Option<CollectorReceiveError> {
+        loop {
+            if let Some(error) = self.worker_termination_nonblocking() {
+                return Some(error);
+            }
+            let remaining = deadline.remaining();
+            if remaining.is_zero() {
+                return self.worker_termination_nonblocking();
+            }
+            thread::sleep(std::cmp::min(remaining, WORKER_FINISH_POLL_INTERVAL));
+        }
+    }
+
+    fn worker_termination_nonblocking(&mut self) -> Option<CollectorReceiveError> {
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            return None;
+        }
+        Some(self.worker_termination())
+    }
+
+    fn worker_termination(&mut self) -> CollectorReceiveError {
+        match self.worker.take().map(JoinHandle::join) {
+            Some(Err(payload)) => worker_receive_panic(payload),
+            Some(Ok(())) | None => worker_stop(),
+        }
     }
 }
 
@@ -544,7 +756,9 @@ impl Drop for Collector {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
         if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+            if let Err(payload) = worker.join() {
+                suppress_panic_payload(payload);
+            }
         }
     }
 }
@@ -626,9 +840,13 @@ fn run_worker(
         sender: deliveries.clone(),
         output_full_pending: Rc::clone(&output_full_pending),
     };
+    let callback_panic = Rc::new(RefCell::new(None));
+    let callback_panic_capture = Rc::clone(&callback_panic);
     let mut ring_builder = RingBufferBuilder::new();
     if let Err(error) = ring_builder.add(&skeleton.maps.events, move |data| {
-        queue.deliver(&callback_running, data)
+        catch_callback_panic(&callback_panic_capture, || {
+            queue.deliver(&callback_running, data)
+        })
     }) {
         startup_failure(&startup, CollectorStartErrorKind::RingSetup, error);
         return;
@@ -645,7 +863,18 @@ fn run_worker(
     }
 
     while running.load(Ordering::Acquire) {
-        if let Err(error) = ring.poll(POLL_INTERVAL) {
+        let result = ring.poll(POLL_INTERVAL);
+        // The callback is invoked through an extern-C frame, so resume a caught
+        // panic only after control has returned to Rust.  Preserve an already
+        // pending queue-loss notice before that terminal panic.
+        if callback_panicked(&callback_panic) && output_full_pending.replace(false) {
+            let _ = terminal.try_send(receive_error(
+                CollectorReceiveErrorKind::OutputQueueFull,
+                "one or more delivery entries were omitted",
+            ));
+        }
+        resume_callback_panic(&callback_panic);
+        if let Err(error) = result {
             if running.load(Ordering::Acquire) {
                 if output_full_pending.get() {
                     let _ = terminal.try_send(receive_error(
@@ -667,7 +896,6 @@ fn run_worker(
 mod tests {
     use super::*;
     use crate::event::{Event, FreeRulesetEvent, KernelTimestamp, RulesetId, MIN_LANDLOCK_ID};
-    use std::time::Instant;
 
     #[cfg(target_endian = "little")]
     const RULESET_FREE_FIXTURE: &[u8; 344] =
@@ -702,12 +930,10 @@ mod tests {
         let (delivery_tx, delivery_rx) = mpsc::sync_channel(capacity);
         let (terminal_tx, terminal_rx) = mpsc::sync_channel(1);
         let running = Arc::new(AtomicBool::new(true));
-        let worker_running = Arc::clone(&running);
-        let worker = thread::spawn(move || {
-            while worker_running.load(Ordering::Acquire) {
-                thread::yield_now();
-            }
-        });
+        let worker = thread::spawn(|| {});
+        while !worker.is_finished() {
+            thread::yield_now();
+        }
         (
             Collector {
                 deliveries: delivery_rx,
@@ -719,6 +945,38 @@ mod tests {
             delivery_tx,
             terminal_tx,
         )
+    }
+
+    struct DelayedTeardown {
+        entered: mpsc::SyncSender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    impl Drop for DelayedTeardown {
+        fn drop(&mut self) {
+            self.entered.send(()).unwrap();
+            self.release.recv().unwrap();
+        }
+    }
+
+    fn delayed_teardown_collector() -> (Collector, mpsc::SyncSender<()>) {
+        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        let config = CollectorConfig::default();
+        let collector = config
+            .start_with_worker(move |deliveries, terminal, _, startup| {
+                startup.send(Ok(())).unwrap();
+                let _teardown = DelayedTeardown {
+                    entered: entered_tx,
+                    release: release_rx,
+                };
+                drop(deliveries);
+                drop(terminal);
+                panic!("panic before delayed teardown");
+            })
+            .unwrap();
+        entered_rx.recv().unwrap();
+        (collector, release_tx)
     }
 
     #[test]
@@ -908,10 +1166,303 @@ mod tests {
     }
 
     #[test]
-    fn drop_requests_and_joins_fake_worker() {
-        let (collector, _deliveries, _terminal) = fake_collector(1);
+    fn panic_before_readiness_is_a_startup_error() {
+        let config = CollectorConfig::default();
+        let result = config.start_with_worker(|_, _, _, _| {
+            panic!("panic before readiness");
+        });
+        let error = match result {
+            Ok(_) => panic!(),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), CollectorStartErrorKind::WorkerPanic);
+        let source = error
+            .source()
+            .unwrap()
+            .downcast_ref::<CollectorWorkerPanic>()
+            .unwrap();
+        assert_eq!(source.message(), Some("panic before readiness"));
+    }
+
+    #[test]
+    fn callback_panic_resumes_only_after_the_callback_returns() {
+        let panic = RefCell::new(None);
+        let result = catch_callback_panic(&panic, || panic!("callback panic"));
+        assert_eq!(result, -1);
+        assert!(callback_panicked(&panic));
+
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            resume_callback_panic(&panic);
+        }))
+        .unwrap_err();
+        assert_eq!(
+            CollectorWorkerPanic::from_payload(payload).message(),
+            Some("callback panic")
+        );
+        assert!(panic.borrow().is_none());
+    }
+
+    #[test]
+    fn explicit_startup_failure_precedes_teardown_panic() {
+        let config = CollectorConfig::default();
+        let result = config.start_with_worker(|_, _, _, startup| {
+            startup
+                .send(Err(CollectorStartError::new(
+                    CollectorStartErrorKind::Open,
+                    std::io::Error::other("fake open failure"),
+                )))
+                .unwrap();
+            panic!("panic during failed startup teardown");
+        });
+        let error = match result {
+            Ok(_) => panic!(),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), CollectorStartErrorKind::Open);
+        assert_eq!(error.source().unwrap().to_string(), "fake open failure");
+    }
+
+    #[test]
+    fn panic_after_readiness_follows_buffered_deliveries() {
+        let config = CollectorConfig::builder()
+            .event_capacity(2)
+            .build()
+            .unwrap();
+        let mut collector = config
+            .start_with_worker(|deliveries, _, _, startup| {
+                startup.send(Ok(())).unwrap();
+                for id_offset in 1..=2 {
+                    deliveries
+                        .send(DeliveryEntry {
+                            delivery: Ok(event(id_offset)),
+                            output_full_before: false,
+                        })
+                        .unwrap();
+                }
+                std::panic::panic_any(String::from("panic after deliveries"));
+            })
+            .unwrap();
+
+        assert_eq!(
+            collector.recv_timeout(Duration::from_secs(1)).unwrap(),
+            event(1)
+        );
+        assert_eq!(
+            collector.recv_timeout(Duration::from_secs(1)).unwrap(),
+            event(2)
+        );
+        let ReceiveTimeoutError::Collector(error) =
+            collector.recv_timeout(Duration::from_secs(1)).unwrap_err()
+        else {
+            panic!()
+        };
+        assert_eq!(error.kind(), CollectorReceiveErrorKind::WorkerPanic);
+        let source = error
+            .source()
+            .unwrap()
+            .downcast_ref::<CollectorWorkerPanic>()
+            .unwrap();
+        assert_eq!(source.message(), Some("panic after deliveries"));
+        let TryReceiveError::Collector(error) = collector.try_recv().unwrap_err() else {
+            panic!()
+        };
+        assert_eq!(error.kind(), CollectorReceiveErrorKind::WorkerStop);
+    }
+
+    #[test]
+    fn terminal_poll_error_precedes_worker_panic() {
+        let config = CollectorConfig::default();
+        let mut collector = config
+            .start_with_worker(|_, terminal, _, startup| {
+                startup.send(Ok(())).unwrap();
+                terminal
+                    .send(CollectorReceiveError::new(
+                        CollectorReceiveErrorKind::PollFailure,
+                        std::io::Error::other("fake poll failure"),
+                    ))
+                    .unwrap();
+                panic!("panic after terminal error");
+            })
+            .unwrap();
+
+        let ReceiveTimeoutError::Collector(error) =
+            collector.recv_timeout(Duration::from_secs(1)).unwrap_err()
+        else {
+            panic!()
+        };
+        assert_eq!(error.kind(), CollectorReceiveErrorKind::PollFailure);
+        let ReceiveTimeoutError::Collector(error) =
+            collector.recv_timeout(Duration::from_secs(1)).unwrap_err()
+        else {
+            panic!()
+        };
+        assert_eq!(error.kind(), CollectorReceiveErrorKind::WorkerPanic);
+    }
+
+    #[test]
+    fn disconnected_try_recv_does_not_join_unwinding_worker() {
+        let (mut collector, release_tx) = delayed_teardown_collector();
+        let (try_finished_tx, try_finished_rx) = mpsc::sync_channel(0);
+        let watchdog = thread::spawn(move || {
+            let _ = try_finished_rx.recv_timeout(Duration::from_secs(1));
+            release_tx.send(()).unwrap();
+        });
         let start = Instant::now();
-        drop(collector);
+        assert!(matches!(collector.try_recv(), Err(TryReceiveError::Empty)));
+        let elapsed = start.elapsed();
+        try_finished_tx.send(()).unwrap();
+        watchdog.join().unwrap();
+        assert!(elapsed < Duration::from_millis(500));
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let panic_error = loop {
+            match collector.try_recv() {
+                Err(TryReceiveError::Empty) => {
+                    assert!(Instant::now() < deadline);
+                    thread::yield_now();
+                }
+                Err(TryReceiveError::Collector(error)) => break error,
+                Ok(_) => panic!(),
+            }
+        };
+        assert_eq!(panic_error.kind(), CollectorReceiveErrorKind::WorkerPanic);
+        let TryReceiveError::Collector(error) = collector.try_recv().unwrap_err() else {
+            panic!()
+        };
+        assert_eq!(error.kind(), CollectorReceiveErrorKind::WorkerStop);
+    }
+
+    #[test]
+    fn recv_timeout_budget_includes_unfinished_worker_teardown() {
+        let (mut collector, release_tx) = delayed_teardown_collector();
+        let (receive_finished_tx, receive_finished_rx) = mpsc::sync_channel(1);
+        let watchdog = thread::spawn(move || {
+            let _ = receive_finished_rx.recv_timeout(Duration::from_secs(1));
+            release_tx.send(()).unwrap();
+        });
+
+        let start = Instant::now();
+        assert!(matches!(
+            collector.recv_timeout(Duration::from_millis(20)),
+            Err(ReceiveTimeoutError::Timeout)
+        ));
+        let elapsed = start.elapsed();
+        assert!(elapsed < Duration::from_millis(500));
+        assert!(matches!(
+            collector.recv_timeout(Duration::ZERO),
+            Err(ReceiveTimeoutError::Timeout)
+        ));
+
+        let _ = receive_finished_tx.try_send(());
+        watchdog.join().unwrap();
+        let ReceiveTimeoutError::Collector(error) =
+            collector.recv_timeout(Duration::from_secs(1)).unwrap_err()
+        else {
+            panic!()
+        };
+        assert_eq!(error.kind(), CollectorReceiveErrorKind::WorkerPanic);
+        let source = error
+            .source()
+            .unwrap()
+            .downcast_ref::<CollectorWorkerPanic>()
+            .unwrap();
+        assert_eq!(source.message(), Some("panic before delayed teardown"));
+        let ReceiveTimeoutError::Collector(error) =
+            collector.recv_timeout(Duration::from_secs(1)).unwrap_err()
+        else {
+            panic!()
+        };
+        assert_eq!(error.kind(), CollectorReceiveErrorKind::WorkerStop);
+    }
+
+    #[test]
+    fn queued_delivery_accepts_maximum_timeout() {
+        let (mut collector, deliveries, _terminal) = fake_collector(1);
+        deliveries
+            .try_send(DeliveryEntry {
+                delivery: Ok(event(1)),
+                output_full_before: false,
+            })
+            .unwrap();
+        assert_eq!(collector.recv_timeout(Duration::MAX).unwrap(), event(1));
+    }
+
+    #[test]
+    fn opaque_panic_payload_is_dropped() {
+        struct DropTracker(Arc<AtomicBool>);
+
+        impl Drop for DropTracker {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let payload_dropped = Arc::clone(&dropped);
+        let config = CollectorConfig::default();
+        let mut collector = config
+            .start_with_worker(|_, _, _, startup| {
+                startup.send(Ok(())).unwrap();
+                std::panic::panic_any(DropTracker(payload_dropped));
+            })
+            .unwrap();
+
+        let ReceiveTimeoutError::Collector(error) =
+            collector.recv_timeout(Duration::from_secs(1)).unwrap_err()
+        else {
+            panic!()
+        };
+        assert_eq!(error.kind(), CollectorReceiveErrorKind::WorkerPanic);
+        let source = error
+            .source()
+            .unwrap()
+            .downcast_ref::<CollectorWorkerPanic>()
+            .unwrap();
+        assert_eq!(source.message(), None);
+        assert_eq!(
+            source.to_string(),
+            "collector worker panicked with an opaque payload"
+        );
+        assert!(dropped.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn hostile_panic_payload_does_not_escape_receive_or_drop() {
+        struct PanicOnDrop;
+
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                panic!("panic payload dropped");
+            }
+        }
+
+        let config = CollectorConfig::default();
+        let mut collector = config
+            .start_with_worker(|_, _, _, startup| {
+                startup.send(Ok(())).unwrap();
+                std::panic::panic_any(PanicOnDrop);
+            })
+            .unwrap();
+        let receive = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            collector.recv_timeout(Duration::from_secs(1))
+        }));
+        let ReceiveTimeoutError::Collector(error) = receive.unwrap().unwrap_err() else {
+            panic!()
+        };
+        assert_eq!(error.kind(), CollectorReceiveErrorKind::WorkerPanic);
+
+        let collector = config
+            .start_with_worker(|_, _, running, startup| {
+                startup.send(Ok(())).unwrap();
+                while running.load(Ordering::Acquire) {
+                    thread::yield_now();
+                }
+                std::panic::panic_any(PanicOnDrop);
+            })
+            .unwrap();
+        let start = Instant::now();
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(collector)));
+        assert!(dropped.is_ok());
         assert!(start.elapsed() < Duration::from_secs(1));
     }
 
