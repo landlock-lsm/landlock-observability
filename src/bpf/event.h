@@ -5,6 +5,8 @@
 /* Kernel command sources are NUL-terminated TASK_COMM_LEN arrays. */
 #define TASK_COMM_LEN 16
 #define PATH_MAX_LEN 256
+/* sun_path capacity minus the structural abstract-namespace NUL. */
+#define ABSTRACT_UNIX_SOCKET_NAME_MAX_LEN 107
 #define EVENT_RING_SIZE (256 * 1024)
 
 enum event_type {
@@ -145,7 +147,9 @@ struct landlock_observability_event {
 			__u8 _pad[2];
 			__u64 peer_domain_id;
 			__u32 peer_pid;
-			__u8 _tail_pad[4];
+			__u32 abstract_name_len;
+			char abstract_name[ABSTRACT_UNIX_SOCKET_NAME_MAX_LEN];
+			__u8 _tail_pad[5];
 		} deny_scope_abstract_unix_socket;
 		struct {
 			__u64 domain_id;
@@ -185,6 +189,9 @@ _Static_assert(sizeof(__u8) == 1, "unexpected __u8 width");
 _Static_assert(sizeof(__u32) == 4, "unexpected __u32 width");
 _Static_assert(sizeof(__u64) == 8, "unexpected __u64 width");
 _Static_assert(sizeof(char) == 1, "unexpected char width");
+_Static_assert(ABSTRACT_UNIX_SOCKET_NAME_MAX_LEN ==
+		       sizeof(((struct sockaddr_un *)0)->sun_path) - 1,
+	       "unexpected abstract UNIX socket name capacity");
 _Static_assert(sizeof(struct landlock_observability_event) == 344,
 	       "unexpected event size");
 _Static_assert(__alignof__(struct landlock_observability_event) == 8,
@@ -260,7 +267,9 @@ ASSERT_FIELD(deny_scope_signal._tail_pad, 100, 4);
 ASSERT_DENIAL_HEADER(deny_scope_abstract_unix_socket);
 ASSERT_FIELD(deny_scope_abstract_unix_socket.peer_domain_id, 72, 8);
 ASSERT_FIELD(deny_scope_abstract_unix_socket.peer_pid, 80, 4);
-ASSERT_FIELD(deny_scope_abstract_unix_socket._tail_pad, 84, 4);
+ASSERT_FIELD(deny_scope_abstract_unix_socket.abstract_name_len, 84, 4);
+ASSERT_FIELD(deny_scope_abstract_unix_socket.abstract_name, 88, 107);
+ASSERT_FIELD(deny_scope_abstract_unix_socket._tail_pad, 195, 5);
 ASSERT_FIELD(free_domain.domain_id, 16, 8);
 ASSERT_FIELD(free_domain.denials, 24, 8);
 ASSERT_FIELD(free_ruleset.ruleset_id, 16, 8);
@@ -275,7 +284,7 @@ ASSERT_FIELD(deny_access_fs, 16, 328);
 ASSERT_FIELD(deny_access_net, 16, 72);
 ASSERT_FIELD(deny_ptrace, 16, 88);
 ASSERT_FIELD(deny_scope_signal, 16, 88);
-ASSERT_FIELD(deny_scope_abstract_unix_socket, 16, 72);
+ASSERT_FIELD(deny_scope_abstract_unix_socket, 16, 184);
 ASSERT_FIELD(free_domain, 16, 16);
 ASSERT_FIELD(free_ruleset, 16, 16);
 

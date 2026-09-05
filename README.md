@@ -62,7 +62,10 @@ STATS domains=<allocated>/<total> denials=<n> (fs=<n> net=<n> ptrace=<n> signal=
 IDs use lowercase hexadecimal without `0x`; `?` means unknown. Relational
 `tracee_domain`, `target_domain`, and `peer_domain` identify the other party for
 ptrace, signal, and abstract UNIX socket denials respectively; a value of `0`
-means that party was unsandboxed. The domain-level `no_new_privs` field is
+means that party was unsandboxed. Abstract UNIX socket targets use
+`@<name>`, with the structural namespace NUL omitted and embedded or trailing
+NUL bytes escaped.
+The domain-level `no_new_privs` field is
 unknown before an enforcement observation and uses weakest-wins semantics over
 the latest observation for each observed enforcing TID: `1` only when all such
 observations have it set, and `0` when any lacks it. Observed TIDs are not a

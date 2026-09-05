@@ -118,4 +118,19 @@ struct sock {
 	struct pid *sk_peer_pid;
 } __attribute__((preserve_access_index));
 
+struct sockaddr_un {
+	unsigned short sun_family;
+	char sun_path[108];
+} __attribute__((preserve_access_index));
+
+struct unix_address {
+	int len;
+	struct sockaddr_un name[];
+} __attribute__((preserve_access_index));
+
+struct unix_sock {
+	struct sock sk;
+	struct unix_address *addr;
+} __attribute__((preserve_access_index));
+
 #endif /* __VMLINUX_H__ */

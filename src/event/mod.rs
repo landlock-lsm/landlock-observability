@@ -994,22 +994,30 @@ pub struct DenyScopeAbstractUnixSocketEvent {
     context: DenialContext,
     peer_domain: DomainMembership,
     peer_pid: u32,
+    abstract_name: CapturedAbstractUnixSocketName,
 }
 typestate_builder!(
     DenyScopeAbstractUnixSocketEvent, DenyScopeAbstractUnixSocketEventBuilder, "A typestate builder for [`DenyScopeAbstractUnixSocketEvent`].";
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     context: Context => DenialContext, "Sets the facts shared by denial events.";
     peer_domain: PeerDomain => DomainMembership, "Sets the socket peer domain membership.";
-    peer_pid: PeerPid => u32, "Sets the socket peer PID.";
+    peer_pid: PeerPid => u32, "Sets the best-effort socket peer PID.";
+    abstract_name: AbstractName => CapturedAbstractUnixSocketName, "Sets the peer socket's captured abstract name.";
 );
 impl DenyScopeAbstractUnixSocketEvent {
     /// Returns whether the peer was unsandboxed or in a domain.
     pub const fn peer_domain(&self) -> DomainMembership {
         self.peer_domain
     }
-    /// Returns the socket peer PID captured by the kernel.
+    /// Returns the best-effort socket peer PID captured by the kernel.
+    ///
+    /// This value is descriptive and is not a stable socket identity.
     pub const fn peer_pid(&self) -> u32 {
         self.peer_pid
+    }
+    /// Returns the peer socket's exact abstract name.
+    pub const fn abstract_name(&self) -> &CapturedAbstractUnixSocketName {
+        &self.abstract_name
     }
 }
 impl sealed::Sealed for DenyScopeAbstractUnixSocketEvent {}

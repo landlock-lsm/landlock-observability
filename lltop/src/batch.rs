@@ -404,7 +404,7 @@ fn format_denial(kind: DenialKind, denial: &AggregatedDenial) -> String {
         Event::DenyScopeAbstractUnixSocket(event) => (
             event.context().hierarchy().domain_id(),
             "Scope:abstract_unix_socket".to_owned(),
-            format!("peer:{}", event.peer_pid()),
+            format!("@{}", escape(event.abstract_name())),
             Some(("peer_domain", event.peer_domain())),
         ),
         _ => unreachable!("an aggregated denial contains a denial event"),
@@ -670,6 +670,7 @@ mod tests {
                     .context(context(0x10, None, 5))
                     .peer_domain(DomainMembership::Unsandboxed)
                     .peer_pid(22)
+                    .abstract_name(captured(b"service\0v1"))
                     .build(),
             ),
         ];
@@ -691,7 +692,7 @@ mod tests {
                 "DENIAL type=NET domain=100000010 blockers=Net:connect_tcp target=dport:443 count=1 age=0s same_exec=1 logged=0",
                 "DENIAL type=PTRACE domain=100000010 blockers=ptrace target=pid:20:tracee count=1 age=0s same_exec=1 logged=0 tracee_domain=0",
                 "DENIAL type=SIGNAL domain=100000010 blockers=Scope:signal target=pid:21:tar\\x3aget count=1 age=0s same_exec=1 logged=0 target_domain=100000022",
-                "DENIAL type=ABSTRACT_UNIX domain=100000010 blockers=Scope:abstract_unix_socket target=peer:22 count=1 age=0s same_exec=1 logged=0 peer_domain=0",
+                "DENIAL type=ABSTRACT_UNIX domain=100000010 blockers=Scope:abstract_unix_socket target=@service\\x00v1 count=1 age=0s same_exec=1 logged=0 peer_domain=0",
             ]
         );
         assert!(output.ends_with(

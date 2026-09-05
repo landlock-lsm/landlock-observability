@@ -113,13 +113,14 @@ Network targets are `sport:<port>` for unambiguous bind access and
 `dport:<port>` for unambiguous connect/send access, including when the selected
 port is zero. Both are shown as `sport:<port>,dport:<port>` when known access
 names do not determine one direction. Filesystem targets are escaped paths,
-task targets are `pid:<tgid>:<comm>`, and abstract UNIX targets are
-`peer:<pid>`.
+task targets are `pid:<tgid>:<comm>`, and abstract UNIX socket targets are
+`@<name>`, with the structural namespace NUL omitted and all name bytes
+(including embedded or trailing NUL) preserved and escaped below.
 
-Every byte in a kernel-captured path or command that is not an ASCII letter,
-digit, `_`, `-`, `.`, or `/` is encoded as `\xNN`, using exactly two lowercase
-hexadecimal digits. This includes spaces, target separators captured within a
-path or command, protocol punctuation, percent and backslash, control bytes, and
+Every byte in a kernel-captured path, command, or abstract UNIX socket name
+that is not an ASCII letter, digit, `_`, `-`, `.`, or `/` is encoded as `\xNN`,
+using exactly two lowercase hexadecimal digits. This includes spaces, target
+separators captured within a path or command, protocol punctuation, percent and
 all non-ASCII bytes, so records cannot be split or terminal control sequences
 injected. Fixed protocol punctuation is not escaped.
 

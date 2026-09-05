@@ -3,8 +3,8 @@
 //! Optional bounded aggregation of Landlock denial events.
 
 use crate::event::{
-    CapturedCommand, Denial, DomainId, DomainMembership, Event, FilesystemAccess, KernelTimestamp,
-    NetworkAccess, Observation,
+    CapturedAbstractUnixSocketName, CapturedCommand, Denial, DomainId, DomainMembership, Event,
+    FilesystemAccess, KernelTimestamp, NetworkAccess, Observation,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -206,16 +206,20 @@ impl SignalDenialKey {
 pub struct AbstractUnixSocketDenialKey {
     domain_id: DomainId,
     peer_domain: DomainMembership,
-    peer_pid: u32,
+    abstract_name: CapturedAbstractUnixSocketName,
 }
 
 impl AbstractUnixSocketDenialKey {
     /// Creates an abstract UNIX socket denial key.
-    pub const fn new(domain_id: DomainId, peer_domain: DomainMembership, peer_pid: u32) -> Self {
+    pub fn new(
+        domain_id: DomainId,
+        peer_domain: DomainMembership,
+        abstract_name: CapturedAbstractUnixSocketName,
+    ) -> Self {
         Self {
             domain_id,
             peer_domain,
-            peer_pid,
+            abstract_name,
         }
     }
 
@@ -229,9 +233,9 @@ impl AbstractUnixSocketDenialKey {
         self.peer_domain
     }
 
-    /// Returns the socket peer PID captured by the kernel.
-    pub const fn peer_pid(&self) -> u32 {
-        self.peer_pid
+    /// Returns the peer socket's captured abstract name.
+    pub const fn abstract_name(&self) -> &CapturedAbstractUnixSocketName {
+        &self.abstract_name
     }
 }
 
@@ -606,7 +610,7 @@ fn denial_facts(event: &Event) -> Option<(DenialKey, bool, bool)> {
             DenialKey::AbstractUnixSocket(AbstractUnixSocketDenialKey::new(
                 denial.context().hierarchy().domain_id(),
                 denial.peer_domain(),
-                denial.peer_pid(),
+                denial.abstract_name().clone(),
             )),
             denial.context(),
         ),
@@ -712,6 +716,7 @@ mod tests {
                     DomainId::new(MIN_LANDLOCK_ID + 21).unwrap(),
                 ))
                 .peer_pid(32)
+                .abstract_name(string(b"service\0v1"))
                 .build(),
         );
         let mut aggregator = DenialAggregator::new();
@@ -749,7 +754,7 @@ mod tests {
         let unix_key = DenialKey::AbstractUnixSocket(AbstractUnixSocketDenialKey::new(
             DomainId::new(MIN_LANDLOCK_ID + 14).unwrap(),
             DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 21).unwrap()),
-            32,
+            string(b"service\0v1"),
         ));
         assert!(aggregator.get(&fs_key).is_some());
         assert!(aggregator.get(&network_key).is_some());
@@ -793,7 +798,7 @@ mod tests {
             key.peer_domain(),
             DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 21).unwrap())
         );
-        assert_eq!(key.peer_pid(), 32);
+        assert_eq!(key.abstract_name().as_bytes(), b"service\0v1");
     }
 
     #[test]
@@ -845,13 +850,14 @@ mod tests {
                 )
             }
         };
-        let unix_denial = |peer_domain, peer_pid| {
+        let unix_denial = |peer_domain, peer_pid, abstract_name: &[u8]| {
             Event::DenyScopeAbstractUnixSocket(
                 DenyScopeAbstractUnixSocketEvent::builder()
                     .timestamp(KernelTimestamp::from_nanoseconds(1))
                     .context(context(1, 1, false, false))
                     .peer_domain(peer_domain)
                     .peer_pid(peer_pid)
+                    .abstract_name(string(abstract_name))
                     .build(),
             )
         };
@@ -874,18 +880,47 @@ mod tests {
             ),
             task_denial(false, DomainMembership::Unsandboxed, 2, b"task"),
             task_denial(false, DomainMembership::Unsandboxed, 1, b"other"),
-            unix_denial(DomainMembership::Unsandboxed, 1),
+            unix_denial(DomainMembership::Unsandboxed, 1, b"service\0one"),
             unix_denial(
                 DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 2).unwrap()),
                 1,
+                b"service\0one",
             ),
-            unix_denial(DomainMembership::Unsandboxed, 2),
+            unix_denial(DomainMembership::Unsandboxed, 1, b"service\0two"),
         ];
         let mut aggregator = DenialAggregator::new();
         for event in &events {
             aggregator.observe(event);
         }
         assert_eq!(aggregator.len(), events.len());
+    }
+
+    #[test]
+    fn abstract_name_is_identity_while_peer_pid_is_descriptive() {
+        let denial = |timestamp, peer_pid, abstract_name: &[u8]| {
+            Event::DenyScopeAbstractUnixSocket(
+                DenyScopeAbstractUnixSocketEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(timestamp))
+                    .context(context(1, 1, false, false))
+                    .peer_domain(DomainMembership::Unsandboxed)
+                    .peer_pid(peer_pid)
+                    .abstract_name(string(abstract_name))
+                    .build(),
+            )
+        };
+        let mut aggregator = DenialAggregator::new();
+        aggregator.observe(&denial(1, 10, b"service\0one"));
+        let merged = aggregator
+            .observe_entry(&denial(2, 20, b"service\0one"))
+            .unwrap();
+        assert_eq!(merged.occurrence_count(), 2);
+        let Event::DenyScopeAbstractUnixSocket(latest) = merged.latest_event() else {
+            panic!("latest event changed denial family");
+        };
+        assert_eq!(latest.peer_pid(), 20);
+
+        aggregator.observe(&denial(3, 20, b"service\0two"));
+        assert_eq!(aggregator.len(), 2);
     }
 
     #[test]

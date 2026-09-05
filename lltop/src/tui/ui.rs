@@ -624,7 +624,7 @@ fn target(entry: &AggregatedDenial) -> String {
             event.target_pid(),
             format::escape(event.target_comm())
         ),
-        Event::DenyScopeAbstractUnixSocket(event) => format!("peer:{}", event.peer_pid()),
+        Event::DenyScopeAbstractUnixSocket(event) => event.abstract_name().to_string(),
         _ => unreachable!("aggregated entries contain denials"),
     }
 }
@@ -703,6 +703,13 @@ fn detail_lines(app: &App, model: &ObservationModel, width: usize) -> Vec<Line<'
                 ));
                 fields.push(("Blocked: ".into(), blockers(entry), theme::normal()));
                 fields.push(("Target: ".into(), target(entry), theme::normal()));
+                if let Event::DenyScopeAbstractUnixSocket(event) = entry.latest_event() {
+                    fields.push((
+                        "Latest peer PID: ".into(),
+                        event.peer_pid().to_string(),
+                        theme::normal(),
+                    ));
+                }
                 fields.push((
                     "Count: ".into(),
                     entry.occurrence_count().to_string(),
@@ -897,8 +904,9 @@ pub(super) fn clicked_tab(area: Rect, column: u16, row: u16) -> Option<Tab> {
 mod tests {
     use super::*;
     use landlock_observability::event::{
-        AddRuleFsEvent, AddRuleNetEvent, CapturedCommand, CapturedPath, CreateRulesetEvent,
-        DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, EnforceDomainEvent, FilesystemAccess,
+        AddRuleFsEvent, AddRuleNetEvent, CapturedAbstractUnixSocketName, CapturedCommand,
+        CapturedPath, CreateRulesetEvent, DenialContext, DenyAccessFsEvent, DenyAccessNetEvent,
+        DenyScopeAbstractUnixSocketEvent, DomainMembership, EnforceDomainEvent, FilesystemAccess,
         FreeDomainEvent, HierarchySnapshot, KernelTimestamp, NetworkAccess, ScopeAccess,
         MIN_LANDLOCK_ID,
     };
@@ -1001,6 +1009,55 @@ mod tests {
         assert!(
             status_line(&app, &model).contains("COLLECTOR WARNING: collector output queue is full")
         );
+    }
+
+    #[test]
+    fn abstract_unix_target_is_name_and_peer_pid_is_separate_detail() {
+        let event = Event::DenyScopeAbstractUnixSocket(
+            DenyScopeAbstractUnixSocketEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(1))
+                .context(
+                    DenialContext::builder()
+                        .hierarchy(
+                            HierarchySnapshot::builder()
+                                .domain_id(DomainId::new(MIN_LANDLOCK_ID + 1).unwrap())
+                                .parent_id(None)
+                                .creator_tgid(1)
+                                .creator_comm(
+                                    CapturedCommand::new(b"creator".to_vec(), false).unwrap(),
+                                )
+                                .build(),
+                        )
+                        .cumulative_denial_count(1)
+                        .same_exec(true)
+                        .logged(false)
+                        .build(),
+                )
+                .peer_domain(DomainMembership::Unsandboxed)
+                .peer_pid(42)
+                .abstract_name(
+                    CapturedAbstractUnixSocketName::new(b"service\0v1".to_vec(), false).unwrap(),
+                )
+                .build(),
+        );
+        let mut model = ObservationModel::new();
+        model.observe(&event);
+        let rows = denial_rows(&model, None);
+        let denial = rows
+            .iter()
+            .find(|row| matches!(row.kind, RowKind::Denial(_)))
+            .unwrap();
+        assert!(denial.text.contains("@service\\u{0}v1"));
+
+        let mut app = App::new();
+        app.selected = Some(denial.kind.clone());
+        let details = detail_lines(&app, &model, 120)
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter())
+            .map(|span| span.content.into_owned())
+            .collect::<String>();
+        assert!(details.contains("Target: @service\\u{0}v1"));
+        assert!(details.contains("Latest peer PID: 42"));
     }
 
     #[test]

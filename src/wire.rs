@@ -4,12 +4,13 @@ use std::error::Error;
 use std::fmt;
 
 use crate::event::{
-    AddRuleFsEvent, AddRuleNetEvent, CapturedBytes, CapturedBytesError, CapturedBytesOrigin,
-    CapturedCommand, CreateDomainEvent, CreateRulesetEvent, DenialContext, DenyAccessFsEvent,
-    DenyAccessNetEvent, DenyPtraceEvent, DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent,
-    DomainId, DomainMembership, EnforceDomainEvent, Event, FilesystemAccess, FreeDomainEvent,
-    FreeRulesetEvent, HierarchySnapshot, KernelTimestamp, LandlockId, LandlockIdKind,
-    NetworkAccess, ScopeAccess, UnknownEvent,
+    AddRuleFsEvent, AddRuleNetEvent, CapturedAbstractUnixSocketName, CapturedBytes,
+    CapturedBytesError, CapturedBytesOrigin, CapturedCommand, CreateDomainEvent,
+    CreateRulesetEvent, DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
+    DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, DomainId, DomainMembership,
+    EnforceDomainEvent, Event, FilesystemAccess, FreeDomainEvent, FreeRulesetEvent,
+    HierarchySnapshot, KernelTimestamp, LandlockId, LandlockIdKind, NetworkAccess, ScopeAccess,
+    UnknownEvent,
 };
 
 const RECORD_SIZE: usize = 344;
@@ -18,6 +19,7 @@ const TYPE_OFFSET: usize = 8;
 const UNION_OFFSET: usize = 16;
 const COMM_SIZE: usize = 16;
 const PATH_SIZE: usize = 256;
+const ABSTRACT_UNIX_SOCKET_NAME_MAX_LEN: usize = 107;
 
 const CREATE_RULESET: u8 = 1;
 const ADD_RULE_FS: u8 = 2;
@@ -60,6 +62,14 @@ pub(crate) enum DecodeError {
         /// The origin-specific validation failure.
         source: CapturedBytesError,
     },
+    /// An abstract UNIX socket name length exceeds its wire capacity.
+    #[non_exhaustive]
+    AbstractUnixSocketNameLength {
+        /// The invalid length.
+        value: u32,
+        /// The inclusive maximum valid length.
+        maximum: usize,
+    },
     /// An ID field is below the kernel-assigned ID range, including zero.
     #[non_exhaustive]
     Id {
@@ -91,6 +101,10 @@ impl fmt::Display for DecodeError {
             Self::CapturedBytes { field, source } => {
                 write!(formatter, "invalid captured bytes for {field}: {source}")
             }
+            Self::AbstractUnixSocketNameLength { value, maximum } => write!(
+                formatter,
+                "invalid abstract UNIX socket name length {value}, maximum is {maximum}"
+            ),
             Self::Id { field, value } => write!(formatter, "invalid Landlock ID {field}: {value}"),
             Self::Field { field } => write!(formatter, "invalid field {field}"),
         }
@@ -150,6 +164,32 @@ fn captured_at<K: CapturedBytesOrigin>(
         .ok_or(DecodeError::Field { field })?;
     let bytes_omitted = boolean_at(data, omitted_offset, omitted_field)?;
     captured_c_string(value, bytes_omitted, field)
+}
+
+fn abstract_unix_socket_name_at(
+    data: &[u8],
+    length_offset: usize,
+    name_offset: usize,
+) -> Result<CapturedAbstractUnixSocketName, DecodeError> {
+    const FIELD: &str = "abstract_unix_socket_name";
+
+    let length = u32_at(data, length_offset, "abstract_unix_socket_name_length")?;
+    if length > ABSTRACT_UNIX_SOCKET_NAME_MAX_LEN as u32 {
+        return Err(DecodeError::AbstractUnixSocketNameLength {
+            value: length,
+            maximum: ABSTRACT_UNIX_SOCKET_NAME_MAX_LEN,
+        });
+    }
+    let length = length as usize;
+    let value = data
+        .get(name_offset..name_offset + length)
+        .ok_or(DecodeError::Field { field: FIELD })?;
+    CapturedAbstractUnixSocketName::new(value.to_vec(), false).map_err(|source| {
+        DecodeError::CapturedBytes {
+            field: FIELD,
+            source,
+        }
+    })
 }
 
 fn command_at(
@@ -334,6 +374,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
                     "peer_domain",
                 )?)
                 .peer_pid(u32_at(data, 80, "peer_pid")?)
+                .abstract_name(abstract_unix_socket_name_at(data, 84, 88)?)
                 .build(),
         ),
         FREE_DOMAIN => Event::FreeDomain(
@@ -626,6 +667,7 @@ mod tests {
                         DomainId::new(0xE900000000000009).unwrap(),
                     ))
                     .peer_pid(0xA8000009)
+                    .abstract_name(captured(b"service\0\xff\0", false))
                     .build(),
             ),
             Event::FreeDomain(
@@ -837,6 +879,7 @@ mod tests {
             DomainMembership::Sandboxed(DomainId::new(0xE900000000000009).unwrap())
         );
         assert_eq!(value.peer_pid(), 0xA8000009);
+        assert_eq!(value.abstract_name().as_bytes(), b"service\0\xff\0");
 
         let Event::FreeDomain(value) = decode(FIXTURES[9]).unwrap() else {
             panic!()
@@ -987,6 +1030,36 @@ mod tests {
             panic!()
         };
         assert_eq!(unsandboxed.target_domain(), DomainMembership::Unsandboxed);
+    }
+
+    #[test]
+    fn abstract_unix_socket_name_length_is_exact_and_bounded() {
+        let mut empty = *FIXTURES[8];
+        empty[84..88].copy_from_slice(&0_u32.to_ne_bytes());
+        let Event::DenyScopeAbstractUnixSocket(empty) = decode(&empty).unwrap() else {
+            panic!()
+        };
+        assert!(empty.abstract_name().as_bytes().is_empty());
+
+        let mut maximum = *FIXTURES[8];
+        maximum[84..88].copy_from_slice(&107_u32.to_ne_bytes());
+        maximum[88..195].copy_from_slice(&[0xa5; 107]);
+        let Event::DenyScopeAbstractUnixSocket(maximum) = decode(&maximum).unwrap() else {
+            panic!()
+        };
+        assert_eq!(maximum.abstract_name().as_bytes(), &[0xa5; 107]);
+
+        for invalid in [108, u32::MAX] {
+            let mut malformed = *FIXTURES[8];
+            malformed[84..88].copy_from_slice(&invalid.to_ne_bytes());
+            assert_eq!(
+                decode(&malformed),
+                Err(DecodeError::AbstractUnixSocketNameLength {
+                    value: invalid,
+                    maximum: 107,
+                })
+            );
+        }
     }
 
     #[test]

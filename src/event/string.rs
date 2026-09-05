@@ -23,6 +23,7 @@ mod private {
         const MAXIMUM_LEN: usize;
         const OMISSION_POLICY: OmissionPolicy;
         const DEBUG_NAME: &'static str;
+        const DISPLAY_PREFIX: &'static str;
     }
 }
 
@@ -41,6 +42,7 @@ impl private::CapturedBytesOrigin for PathnameOrigin {
     const MAXIMUM_LEN: usize = 256;
     const OMISSION_POLICY: private::OmissionPolicy = private::OmissionPolicy::FullCapacity;
     const DEBUG_NAME: &'static str = "CapturedPath";
+    const DISPLAY_PREFIX: &'static str = "";
 }
 impl CapturedBytesOrigin for PathnameOrigin {}
 
@@ -54,6 +56,7 @@ impl private::CapturedBytesOrigin for CommandOrigin {
     const MAXIMUM_LEN: usize = 15;
     const OMISSION_POLICY: private::OmissionPolicy = private::OmissionPolicy::NotSupported;
     const DEBUG_NAME: &'static str = "CapturedCommand";
+    const DISPLAY_PREFIX: &'static str = "";
 }
 impl CapturedBytesOrigin for CommandOrigin {}
 
@@ -67,6 +70,7 @@ impl private::CapturedBytesOrigin for AbstractUnixSocketNameOrigin {
     const MAXIMUM_LEN: usize = 107;
     const OMISSION_POLICY: private::OmissionPolicy = private::OmissionPolicy::NotSupported;
     const DEBUG_NAME: &'static str = "CapturedAbstractUnixSocketName";
+    const DISPLAY_PREFIX: &'static str = "@";
 }
 impl CapturedBytesOrigin for AbstractUnixSocketNameOrigin {}
 
@@ -246,6 +250,20 @@ impl CapturedBytes<CommandOrigin> {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl CapturedBytes<AbstractUnixSocketNameOrigin> {
+    /// Constructs a native Linux socket address with the exact abstract name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the standard library rejects the name.
+    pub fn to_socket_addr(&self) -> std::io::Result<std::os::unix::net::SocketAddr> {
+        use std::os::linux::net::SocketAddrExt;
+
+        std::os::unix::net::SocketAddr::from_abstract_name(&self.bytes)
+    }
+}
+
 fn write_valid(formatter: &mut fmt::Formatter<'_>, valid: &str) -> fmt::Result {
     for character in valid.chars() {
         let unsafe_category = matches!(
@@ -293,6 +311,7 @@ impl<K: CapturedBytesOrigin> Hash for CapturedBytes<K> {
 
 impl<K: CapturedBytesOrigin> fmt::Display for CapturedBytes<K> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(K::DISPLAY_PREFIX)?;
         self.write_escaped(formatter, true)
     }
 }
@@ -323,8 +342,18 @@ pub type CapturedCommand = CapturedBytes<CommandOrigin>;
 /// Exact length-delimited bytes of an abstract UNIX socket name.
 ///
 /// Values are complete and contain at most 107 bytes.  The structural leading
-/// namespace NUL is not included; embedded and trailing NUL bytes are preserved.
+/// namespace NUL is not included; embedded and trailing NUL bytes are preserved
+/// and available through [`CapturedBytes::as_bytes`].
 pub type CapturedAbstractUnixSocketName = CapturedBytes<AbstractUnixSocketNameOrigin>;
+
+#[cfg(target_os = "linux")]
+impl TryFrom<&CapturedAbstractUnixSocketName> for std::os::unix::net::SocketAddr {
+    type Error = std::io::Error;
+
+    fn try_from(name: &CapturedAbstractUnixSocketName) -> Result<Self, Self::Error> {
+        name.to_socket_addr()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -440,7 +469,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             value.to_string(),
-            "plain space/é界🙂\\\\\\u{0}\\u{9}\\u{a}\\u{d}\\u{1b}\\u{202e}\\u{2066}\\u{2028}\\u{a0}\\xff"
+            "@plain space/é界🙂\\\\\\u{0}\\u{9}\\u{a}\\u{d}\\u{1b}\\u{202e}\\u{2066}\\u{2028}\\u{a0}\\xff"
         );
     }
 
@@ -465,5 +494,36 @@ mod tests {
     fn lossy_conversion_remains_unescaped() {
         let value = CapturedAbstractUnixSocketName::new(b"a\0\n\xff".to_vec(), false).unwrap();
         assert_eq!(value.to_string_lossy(), "a\0\n�");
+    }
+
+    #[test]
+    fn abstract_display_prefixes_empty_embedded_nul_and_invalid_utf8() {
+        assert_eq!(
+            CapturedAbstractUnixSocketName::new(Vec::new(), false)
+                .unwrap()
+                .to_string(),
+            "@"
+        );
+        assert_eq!(
+            CapturedAbstractUnixSocketName::new(b"a\0\xff".to_vec(), false)
+                .unwrap()
+                .to_string(),
+            "@a\\u{0}\\xff"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn abstract_socket_addr_round_trips_empty_and_maximum_names() {
+        use std::os::linux::net::SocketAddrExt;
+
+        for name in [Vec::new(), (0_u8..=106).collect()] {
+            let captured = CapturedAbstractUnixSocketName::new(name.clone(), false).unwrap();
+            let address = captured.to_socket_addr().unwrap();
+            assert_eq!(address.as_abstract_name(), Some(name.as_slice()));
+
+            let converted = std::os::unix::net::SocketAddr::try_from(&captured).unwrap();
+            assert_eq!(converted.as_abstract_name(), Some(name.as_slice()));
+        }
     }
 }

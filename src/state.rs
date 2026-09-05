@@ -1166,6 +1166,7 @@ mod tests {
                     .context(context(hierarchy(14, None, 114, b"unix"), 11))
                     .peer_domain(DomainMembership::Unsandboxed)
                     .peer_pid(1)
+                    .abstract_name(string(b"service"))
                     .build(),
             ),
         ];
