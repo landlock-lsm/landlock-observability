@@ -551,17 +551,19 @@ mod tests {
         same_exec: bool,
         logged: bool,
     ) -> DenialContext {
-        DenialContext::new(
-            HierarchySnapshot::new(
-                DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap(),
-                None,
-                10,
-                string(b"creator"),
-            ),
-            cumulative,
-            same_exec,
-            logged,
-        )
+        DenialContext::builder()
+            .hierarchy(
+                HierarchySnapshot::builder()
+                    .domain_id(DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap())
+                    .parent_id(None)
+                    .creator_tgid(10)
+                    .creator_comm(string(b"creator"))
+                    .build(),
+            )
+            .cumulative_denial_count(cumulative)
+            .same_exec(same_exec)
+            .logged(logged)
+            .build()
     }
 
     fn fs(
@@ -572,48 +574,62 @@ mod tests {
         target: (u32, u64, &[u8]),
         flags: (bool, bool),
     ) -> Event {
-        Event::DenyAccessFs(DenyAccessFsEvent::new(
-            KernelTimestamp::from_nanoseconds(timestamp),
-            context(domain_offset, cumulative, flags.0, flags.1),
-            FilesystemAccess::from_bits(blockers),
-            target.0,
-            target.1,
-            string(target.2),
-        ))
+        Event::DenyAccessFs(
+            DenyAccessFsEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(timestamp))
+                .context(context(domain_offset, cumulative, flags.0, flags.1))
+                .blockers(FilesystemAccess::from_bits(blockers))
+                .device(target.0)
+                .inode(target.1)
+                .pathname(string(target.2))
+                .build(),
+        )
     }
 
     fn network(timestamp: u64, domain_offset: u64, blockers: u32, ports: (u64, u64)) -> Event {
-        Event::DenyAccessNet(DenyAccessNetEvent::new(
-            KernelTimestamp::from_nanoseconds(timestamp),
-            context(domain_offset, 1, false, true),
-            NetworkAccess::from_bits(blockers),
-            ports.0,
-            ports.1,
-        ))
+        Event::DenyAccessNet(
+            DenyAccessNetEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(timestamp))
+                .context(context(domain_offset, 1, false, true))
+                .blockers(NetworkAccess::from_bits(blockers))
+                .source_port(ports.0)
+                .destination_port(ports.1)
+                .build(),
+        )
     }
 
     #[test]
     fn keys_cover_all_denial_families_and_fields() {
-        let ptrace = Event::DenyPtrace(DenyPtraceEvent::new(
-            KernelTimestamp::from_nanoseconds(3),
-            context(12, 1, false, false),
-            DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 20).unwrap()),
-            30,
-            string(b"tracee"),
-        ));
-        let signal = Event::DenyScopeSignal(DenyScopeSignalEvent::new(
-            KernelTimestamp::from_nanoseconds(4),
-            context(13, 1, false, false),
-            DomainMembership::Unsandboxed,
-            31,
-            string(b"target"),
-        ));
-        let unix = Event::DenyScopeAbstractUnixSocket(DenyScopeAbstractUnixSocketEvent::new(
-            KernelTimestamp::from_nanoseconds(5),
-            context(14, 1, false, false),
-            DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 21).unwrap()),
-            32,
-        ));
+        let ptrace = Event::DenyPtrace(
+            DenyPtraceEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(3))
+                .context(context(12, 1, false, false))
+                .tracee_domain(DomainMembership::Sandboxed(
+                    DomainId::new(MIN_LANDLOCK_ID + 20).unwrap(),
+                ))
+                .tracee_pid(30)
+                .tracee_comm(string(b"tracee"))
+                .build(),
+        );
+        let signal = Event::DenyScopeSignal(
+            DenyScopeSignalEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(4))
+                .context(context(13, 1, false, false))
+                .target_domain(DomainMembership::Unsandboxed)
+                .target_pid(31)
+                .target_comm(string(b"target"))
+                .build(),
+        );
+        let unix = Event::DenyScopeAbstractUnixSocket(
+            DenyScopeAbstractUnixSocketEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(5))
+                .context(context(14, 1, false, false))
+                .peer_domain(DomainMembership::Sandboxed(
+                    DomainId::new(MIN_LANDLOCK_ID + 21).unwrap(),
+                ))
+                .peer_pid(32)
+                .build(),
+        );
         let mut aggregator = DenialAggregator::new();
         aggregator.observe(&fs(1, 10, 1, 0x8000_0001, (2, 3, b"/a"), (false, false)));
         aggregator.observe(&network(2, 11, 0x8000_0002, (100, 200)));
@@ -724,30 +740,36 @@ mod tests {
             let timestamp = KernelTimestamp::from_nanoseconds(1);
             let context = context(1, 1, false, false);
             if signal {
-                Event::DenyScopeSignal(DenyScopeSignalEvent::new(
-                    timestamp,
-                    context,
-                    domain_membership,
-                    task_pid,
-                    string(task_comm),
-                ))
+                Event::DenyScopeSignal(
+                    DenyScopeSignalEvent::builder()
+                        .timestamp(timestamp)
+                        .context(context)
+                        .target_domain(domain_membership)
+                        .target_pid(task_pid)
+                        .target_comm(string(task_comm))
+                        .build(),
+                )
             } else {
-                Event::DenyPtrace(DenyPtraceEvent::new(
-                    timestamp,
-                    context,
-                    domain_membership,
-                    task_pid,
-                    string(task_comm),
-                ))
+                Event::DenyPtrace(
+                    DenyPtraceEvent::builder()
+                        .timestamp(timestamp)
+                        .context(context)
+                        .tracee_domain(domain_membership)
+                        .tracee_pid(task_pid)
+                        .tracee_comm(string(task_comm))
+                        .build(),
+                )
             }
         };
         let unix_denial = |peer_domain, peer_pid| {
-            Event::DenyScopeAbstractUnixSocket(DenyScopeAbstractUnixSocketEvent::new(
-                KernelTimestamp::from_nanoseconds(1),
-                context(1, 1, false, false),
-                peer_domain,
-                peer_pid,
-            ))
+            Event::DenyScopeAbstractUnixSocket(
+                DenyScopeAbstractUnixSocketEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(1))
+                    .context(context(1, 1, false, false))
+                    .peer_domain(peer_domain)
+                    .peer_pid(peer_pid)
+                    .build(),
+            )
         };
         let events = [
             fs(1, 1, 1, 1, (1, 1, b"/a"), (false, false)),
@@ -785,13 +807,15 @@ mod tests {
     #[test]
     fn unknown_bits_and_domain_membership_are_identity() {
         let signal = |target_domain| {
-            Event::DenyScopeSignal(DenyScopeSignalEvent::new(
-                KernelTimestamp::from_nanoseconds(1),
-                context(1, 1, false, false),
-                target_domain,
-                2,
-                string(b"target"),
-            ))
+            Event::DenyScopeSignal(
+                DenyScopeSignalEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(1))
+                    .context(context(1, 1, false, false))
+                    .target_domain(target_domain)
+                    .target_pid(2)
+                    .target_comm(string(b"target"))
+                    .build(),
+            )
         };
         let mut aggregator = DenialAggregator::new();
         aggregator.observe(&fs(1, 1, 1, 1, (1, 1, b"/a"), (false, false)));
@@ -806,16 +830,20 @@ mod tests {
     #[test]
     fn non_denials_and_unknown_events_are_ignored() {
         let mut aggregator = DenialAggregator::new();
-        aggregator.observe(&Event::FreeDomain(FreeDomainEvent::new(
-            KernelTimestamp::from_nanoseconds(1),
-            DomainId::new(MIN_LANDLOCK_ID + 1).unwrap(),
-            2,
-        )));
-        aggregator.observe(&Event::Unknown(UnknownEvent::new(
-            KernelTimestamp::from_nanoseconds(2),
-            99,
-            344,
-        )));
+        aggregator.observe(&Event::FreeDomain(
+            FreeDomainEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(1))
+                .domain_id(DomainId::new(MIN_LANDLOCK_ID + 1).unwrap())
+                .denial_count(2)
+                .build(),
+        ));
+        aggregator.observe(&Event::Unknown(
+            UnknownEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(2))
+                .numeric_kind(99)
+                .record_length(344)
+                .build(),
+        ));
         assert!(aggregator.is_empty());
         assert_eq!(aggregator.len(), 0);
         assert_eq!(aggregator.capacity(), 1000);

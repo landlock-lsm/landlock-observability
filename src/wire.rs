@@ -148,17 +148,19 @@ fn domain_membership(value: u64, field: &'static str) -> Result<DomainMembership
 }
 
 fn denial_context(data: &[u8]) -> Result<DenialContext, DecodeError> {
-    Ok(DenialContext::new(
-        HierarchySnapshot::new(
-            id(u64_at(data, UNION_OFFSET, "domain_id")?, "domain_id")?,
-            parent(u64_at(data, 24, "parent_id")?, "parent_id")?,
-            u32_at(data, 32, "creator_tgid")?,
-            string_at(data, 36, COMM_SIZE, "creator_comm")?,
-        ),
-        u64_at(data, 56, "cumulative_denial_count")?,
-        boolean_at(data, 68, "same_exec")?,
-        boolean_at(data, 69, "logged")?,
-    ))
+    Ok(DenialContext::builder()
+        .hierarchy(
+            HierarchySnapshot::builder()
+                .domain_id(id(u64_at(data, UNION_OFFSET, "domain_id")?, "domain_id")?)
+                .parent_id(parent(u64_at(data, 24, "parent_id")?, "parent_id")?)
+                .creator_tgid(u32_at(data, 32, "creator_tgid")?)
+                .creator_comm(string_at(data, 36, COMM_SIZE, "creator_comm")?)
+                .build(),
+        )
+        .cumulative_denial_count(u64_at(data, 56, "cumulative_denial_count")?)
+        .same_exec(boolean_at(data, 68, "same_exec")?)
+        .logged(boolean_at(data, 69, "logged")?)
+        .build())
 }
 
 /// Decodes one complete private producer record into a semantic event.
@@ -174,95 +176,136 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
     let timestamp = KernelTimestamp::from_nanoseconds(u64_at(data, TIMESTAMP_OFFSET, "timestamp")?);
 
     let event = match event_type {
-        CREATE_RULESET => Event::CreateRuleset(CreateRulesetEvent::new(
-            timestamp,
-            id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?,
-            u32_at(data, 24, "ruleset_version")?,
-            FilesystemAccess::from_bits(u32_at(data, 28, "handled_fs")?),
-            NetworkAccess::from_bits(u32_at(data, 32, "handled_net")?),
-            ScopeAccess::from_bits(u32_at(data, 36, "scoped")?),
-        )),
-        ADD_RULE_FS => Event::AddRuleFs(AddRuleFsEvent::new(
-            timestamp,
-            id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?,
-            u32_at(data, 24, "ruleset_version")?,
-            FilesystemAccess::from_bits(u32_at(data, 28, "access_rights")?),
-            u32_at(data, 32, "device")?,
-            u64_at(data, 40, "inode")?,
-            string_at(data, 48, PATH_SIZE, "pathname")?,
-        )),
-        ADD_RULE_NET => Event::AddRuleNet(AddRuleNetEvent::new(
-            timestamp,
-            id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?,
-            u32_at(data, 24, "ruleset_version")?,
-            NetworkAccess::from_bits(u32_at(data, 28, "access_rights")?),
-            u64_at(data, 32, "port")?,
-        )),
-        CREATE_DOMAIN => Event::CreateDomain(CreateDomainEvent::new(
-            timestamp,
-            id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?,
-            u32_at(data, 24, "ruleset_version")?,
-            id(u64_at(data, 32, "domain_id")?, "domain_id")?,
-            parent(u64_at(data, 40, "parent_id")?, "parent_id")?,
-            u32_at(data, 48, "creator_tgid")?,
-            string_at(data, 52, COMM_SIZE, "creator_comm")?,
-        )),
-        DENY_ACCESS_FS => Event::DenyAccessFs(DenyAccessFsEvent::new(
-            timestamp,
-            denial_context(data)?,
-            FilesystemAccess::from_bits(u32_at(data, 64, "blockers")?),
-            u32_at(data, 72, "device")?,
-            u64_at(data, 80, "inode")?,
-            string_at(data, 88, PATH_SIZE, "pathname")?,
-        )),
-        DENY_ACCESS_NET => Event::DenyAccessNet(DenyAccessNetEvent::new(
-            timestamp,
-            denial_context(data)?,
-            NetworkAccess::from_bits(u32_at(data, 64, "blockers")?),
-            u64_at(data, 72, "source_port")?,
-            u64_at(data, 80, "destination_port")?,
-        )),
-        DENY_PTRACE => Event::DenyPtrace(DenyPtraceEvent::new(
-            timestamp,
-            denial_context(data)?,
-            domain_membership(u64_at(data, 72, "tracee_domain")?, "tracee_domain")?,
-            u32_at(data, 80, "tracee_pid")?,
-            string_at(data, 84, COMM_SIZE, "tracee_comm")?,
-        )),
-        DENY_SCOPE_SIGNAL => Event::DenyScopeSignal(DenyScopeSignalEvent::new(
-            timestamp,
-            denial_context(data)?,
-            domain_membership(u64_at(data, 72, "target_domain")?, "target_domain")?,
-            u32_at(data, 80, "target_pid")?,
-            string_at(data, 84, COMM_SIZE, "target_comm")?,
-        )),
-        DENY_SCOPE_ABSTRACT_UNIX_SOCKET => {
-            Event::DenyScopeAbstractUnixSocket(DenyScopeAbstractUnixSocketEvent::new(
-                timestamp,
-                denial_context(data)?,
-                domain_membership(u64_at(data, 72, "peer_domain")?, "peer_domain")?,
-                u32_at(data, 80, "peer_pid")?,
-            ))
-        }
-        FREE_DOMAIN => Event::FreeDomain(FreeDomainEvent::new(
-            timestamp,
-            id(u64_at(data, 16, "domain_id")?, "domain_id")?,
-            u64_at(data, 24, "denial_count")?,
-        )),
-        FREE_RULESET => Event::FreeRuleset(FreeRulesetEvent::new(
-            timestamp,
-            id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?,
-            u32_at(data, 24, "ruleset_version")?,
-        )),
-        ENFORCE_DOMAIN => Event::EnforceDomain(EnforceDomainEvent::new(
-            timestamp,
-            id(u64_at(data, 16, "domain_id")?, "domain_id")?,
-            u32_at(data, 24, "enforcing_tid")?,
-            boolean_at(data, 28, "complete")?,
-            boolean_at(data, 29, "process_wide")?,
-            boolean_at(data, 30, "no_new_privs")?,
-        )),
-        _ => Event::Unknown(UnknownEvent::new(timestamp, event_type, data.len())),
+        CREATE_RULESET => Event::CreateRuleset(
+            CreateRulesetEvent::builder()
+                .timestamp(timestamp)
+                .ruleset_id(id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?)
+                .ruleset_version(u32_at(data, 24, "ruleset_version")?)
+                .handled_fs(FilesystemAccess::from_bits(u32_at(data, 28, "handled_fs")?))
+                .handled_net(NetworkAccess::from_bits(u32_at(data, 32, "handled_net")?))
+                .scoped(ScopeAccess::from_bits(u32_at(data, 36, "scoped")?))
+                .build(),
+        ),
+        ADD_RULE_FS => Event::AddRuleFs(
+            AddRuleFsEvent::builder()
+                .timestamp(timestamp)
+                .ruleset_id(id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?)
+                .ruleset_version(u32_at(data, 24, "ruleset_version")?)
+                .access_rights(FilesystemAccess::from_bits(u32_at(
+                    data,
+                    28,
+                    "access_rights",
+                )?))
+                .device(u32_at(data, 32, "device")?)
+                .inode(u64_at(data, 40, "inode")?)
+                .pathname(string_at(data, 48, PATH_SIZE, "pathname")?)
+                .build(),
+        ),
+        ADD_RULE_NET => Event::AddRuleNet(
+            AddRuleNetEvent::builder()
+                .timestamp(timestamp)
+                .ruleset_id(id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?)
+                .ruleset_version(u32_at(data, 24, "ruleset_version")?)
+                .access_rights(NetworkAccess::from_bits(u32_at(data, 28, "access_rights")?))
+                .port(u64_at(data, 32, "port")?)
+                .build(),
+        ),
+        CREATE_DOMAIN => Event::CreateDomain(
+            CreateDomainEvent::builder()
+                .timestamp(timestamp)
+                .ruleset_id(id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?)
+                .ruleset_version(u32_at(data, 24, "ruleset_version")?)
+                .domain_id(id(u64_at(data, 32, "domain_id")?, "domain_id")?)
+                .parent_id(parent(u64_at(data, 40, "parent_id")?, "parent_id")?)
+                .creator_tgid(u32_at(data, 48, "creator_tgid")?)
+                .creator_comm(string_at(data, 52, COMM_SIZE, "creator_comm")?)
+                .build(),
+        ),
+        DENY_ACCESS_FS => Event::DenyAccessFs(
+            DenyAccessFsEvent::builder()
+                .timestamp(timestamp)
+                .context(denial_context(data)?)
+                .blockers(FilesystemAccess::from_bits(u32_at(data, 64, "blockers")?))
+                .device(u32_at(data, 72, "device")?)
+                .inode(u64_at(data, 80, "inode")?)
+                .pathname(string_at(data, 88, PATH_SIZE, "pathname")?)
+                .build(),
+        ),
+        DENY_ACCESS_NET => Event::DenyAccessNet(
+            DenyAccessNetEvent::builder()
+                .timestamp(timestamp)
+                .context(denial_context(data)?)
+                .blockers(NetworkAccess::from_bits(u32_at(data, 64, "blockers")?))
+                .source_port(u64_at(data, 72, "source_port")?)
+                .destination_port(u64_at(data, 80, "destination_port")?)
+                .build(),
+        ),
+        DENY_PTRACE => Event::DenyPtrace(
+            DenyPtraceEvent::builder()
+                .timestamp(timestamp)
+                .context(denial_context(data)?)
+                .tracee_domain(domain_membership(
+                    u64_at(data, 72, "tracee_domain")?,
+                    "tracee_domain",
+                )?)
+                .tracee_pid(u32_at(data, 80, "tracee_pid")?)
+                .tracee_comm(string_at(data, 84, COMM_SIZE, "tracee_comm")?)
+                .build(),
+        ),
+        DENY_SCOPE_SIGNAL => Event::DenyScopeSignal(
+            DenyScopeSignalEvent::builder()
+                .timestamp(timestamp)
+                .context(denial_context(data)?)
+                .target_domain(domain_membership(
+                    u64_at(data, 72, "target_domain")?,
+                    "target_domain",
+                )?)
+                .target_pid(u32_at(data, 80, "target_pid")?)
+                .target_comm(string_at(data, 84, COMM_SIZE, "target_comm")?)
+                .build(),
+        ),
+        DENY_SCOPE_ABSTRACT_UNIX_SOCKET => Event::DenyScopeAbstractUnixSocket(
+            DenyScopeAbstractUnixSocketEvent::builder()
+                .timestamp(timestamp)
+                .context(denial_context(data)?)
+                .peer_domain(domain_membership(
+                    u64_at(data, 72, "peer_domain")?,
+                    "peer_domain",
+                )?)
+                .peer_pid(u32_at(data, 80, "peer_pid")?)
+                .build(),
+        ),
+        FREE_DOMAIN => Event::FreeDomain(
+            FreeDomainEvent::builder()
+                .timestamp(timestamp)
+                .domain_id(id(u64_at(data, 16, "domain_id")?, "domain_id")?)
+                .denial_count(u64_at(data, 24, "denial_count")?)
+                .build(),
+        ),
+        FREE_RULESET => Event::FreeRuleset(
+            FreeRulesetEvent::builder()
+                .timestamp(timestamp)
+                .ruleset_id(id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?)
+                .ruleset_version(u32_at(data, 24, "ruleset_version")?)
+                .build(),
+        ),
+        ENFORCE_DOMAIN => Event::EnforceDomain(
+            EnforceDomainEvent::builder()
+                .timestamp(timestamp)
+                .domain_id(id(u64_at(data, 16, "domain_id")?, "domain_id")?)
+                .enforcing_tid(u32_at(data, 24, "enforcing_tid")?)
+                .complete(boolean_at(data, 28, "complete")?)
+                .process_wide(boolean_at(data, 29, "process_wide")?)
+                .no_new_privs(boolean_at(data, 30, "no_new_privs")?)
+                .build(),
+        ),
+        _ => Event::Unknown(
+            UnknownEvent::builder()
+                .timestamp(timestamp)
+                .numeric_kind(event_type)
+                .record_length(data.len())
+                .build(),
+        ),
     };
     Ok(event)
 }
@@ -317,17 +360,19 @@ mod tests {
         same_exec: bool,
         logged: bool,
     ) -> DenialContext {
-        DenialContext::new(
-            HierarchySnapshot::new(
-                DomainId::new(domain_id).unwrap(),
-                parent_id.map(|parent_id| DomainId::new(parent_id).unwrap()),
-                creator_tgid,
-                creator_comm,
-            ),
-            cumulative_denial_count,
-            same_exec,
-            logged,
-        )
+        DenialContext::builder()
+            .hierarchy(
+                HierarchySnapshot::builder()
+                    .domain_id(DomainId::new(domain_id).unwrap())
+                    .parent_id(parent_id.map(|parent_id| DomainId::new(parent_id).unwrap()))
+                    .creator_tgid(creator_tgid)
+                    .creator_comm(creator_comm)
+                    .build(),
+            )
+            .cumulative_denial_count(cumulative_denial_count)
+            .same_exec(same_exec)
+            .logged(logged)
+            .build()
     }
 
     fn generic_timestamp<T: Observation>(observation: &T) -> KernelTimestamp {
@@ -377,142 +422,172 @@ mod tests {
         for fixture in FIXTURES {
             assert_concrete_trait_dispatch(&decode(fixture).unwrap());
         }
-        assert_concrete_trait_dispatch(&Event::Unknown(UnknownEvent::new(
-            KernelTimestamp::from_nanoseconds(13),
-            255,
-            RECORD_SIZE,
-        )));
+        assert_concrete_trait_dispatch(&Event::Unknown(
+            UnknownEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(13))
+                .numeric_kind(255)
+                .record_length(RECORD_SIZE)
+                .build(),
+        ));
     }
 
     #[test]
     fn decodes_all_fixture_fields() {
         let expected = [
-            Event::CreateRuleset(CreateRulesetEvent::new(
-                KernelTimestamp::from_nanoseconds(0x1100000000000001),
-                RulesetId::new(0xA100000000000001).unwrap(),
-                0x12000001,
-                FilesystemAccess::from_bits(0x80010005),
-                NetworkAccess::from_bits(0x8000000A),
-                ScopeAccess::from_bits(0x80000003),
-            )),
-            Event::AddRuleFs(AddRuleFsEvent::new(
-                KernelTimestamp::from_nanoseconds(0x2200000000000002),
-                RulesetId::new(0xA200000000000002).unwrap(),
-                0x23000002,
-                FilesystemAccess::from_bits(0x80004006),
-                0x34000002,
-                0x4500000000000002,
-                captured(b"/fixture/\xff\x1b", false),
-            )),
-            Event::AddRuleNet(AddRuleNetEvent::new(
-                KernelTimestamp::from_nanoseconds(0x3300000000000003),
-                RulesetId::new(0xA300000000000003).unwrap(),
-                0x34000003,
-                NetworkAccess::from_bits(0x80000009),
-                0x5600000000000003,
-            )),
-            Event::CreateDomain(CreateDomainEvent::new(
-                KernelTimestamp::from_nanoseconds(0x4400000000000004),
-                RulesetId::new(0xA400000000000004).unwrap(),
-                0x45000004,
-                DomainId::new(0xD400000000000004).unwrap(),
-                None,
-                0x56000004,
-                captured(b"sixteen-byte-cmd", true),
-            )),
-            Event::DenyAccessFs(DenyAccessFsEvent::new(
-                KernelTimestamp::from_nanoseconds(0x5500000000000005),
-                context(
-                    0xD000000000000005,
-                    None,
-                    0x51000005,
-                    captured(b"creator-5", false),
-                    0xC100000000000005,
-                    true,
-                    false,
-                ),
-                FilesystemAccess::from_bits(0x80010005),
-                0x72000005,
-                0x8300000000000005,
-                captured(vec![b'P'; 256], true),
-            )),
-            Event::DenyAccessNet(DenyAccessNetEvent::new(
-                KernelTimestamp::from_nanoseconds(0x6600000000000006),
-                context(
-                    0xD000000000000006,
-                    Some(0xA000000000000006),
-                    0x51000006,
-                    captured(b"creator-6", false),
-                    0xC100000000000006,
-                    false,
-                    true,
-                ),
-                NetworkAccess::from_bits(0x80010006),
-                0x7400000000000006,
-                0x8500000000000006,
-            )),
-            Event::DenyPtrace(DenyPtraceEvent::new(
-                KernelTimestamp::from_nanoseconds(0x7700000000000007),
-                context(
-                    0xD000000000000007,
-                    Some(0xA000000000000007),
-                    0x51000007,
-                    captured(b"creator-7", false),
-                    0xC100000000000007,
-                    true,
-                    true,
-                ),
-                DomainMembership::Unsandboxed,
-                0x86000007,
-                captured(b"ptrace-target", false),
-            )),
-            Event::DenyScopeSignal(DenyScopeSignalEvent::new(
-                KernelTimestamp::from_nanoseconds(0x8800000000000008),
-                context(
-                    0xD000000000000008,
-                    Some(0xA000000000000008),
-                    0x51000008,
-                    captured(b"creator-8", false),
-                    0xC100000000000008,
-                    false,
-                    false,
-                ),
-                DomainMembership::Sandboxed(DomainId::new(0xE800000000000008).unwrap()),
-                0x97000008,
-                captured(b"signal-target", false),
-            )),
-            Event::DenyScopeAbstractUnixSocket(DenyScopeAbstractUnixSocketEvent::new(
-                KernelTimestamp::from_nanoseconds(0x9900000000000009),
-                context(
-                    0xD000000000000009,
-                    Some(0xA000000000000009),
-                    0x51000009,
-                    captured(b"sixteen-byte-cmd", true),
-                    0xC100000000000009,
-                    true,
-                    false,
-                ),
-                DomainMembership::Sandboxed(DomainId::new(0xE900000000000009).unwrap()),
-                0xA8000009,
-            )),
-            Event::FreeDomain(FreeDomainEvent::new(
-                KernelTimestamp::from_nanoseconds(0xAA0000000000000A),
-                DomainId::new(0xDA0000000000000A).unwrap(),
-                0xAB0000000000000A,
-            )),
-            Event::FreeRuleset(FreeRulesetEvent::new(
-                KernelTimestamp::from_nanoseconds(0xBB0000000000000B),
-                RulesetId::new(0xAB0000000000000B).unwrap(),
-                0xBC00000B,
-            )),
-            Event::EnforceDomain(EnforceDomainEvent::new(
-                KernelTimestamp::from_nanoseconds(0xCC0000000000000C),
-                DomainId::new(0xDC0000000000000C).unwrap(),
-                0xCD00000C,
-                true,
-                false,
-                true,
-            )),
+            Event::CreateRuleset(
+                CreateRulesetEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(0x1100000000000001))
+                    .ruleset_id(RulesetId::new(0xA100000000000001).unwrap())
+                    .ruleset_version(0x12000001)
+                    .handled_fs(FilesystemAccess::from_bits(0x80010005))
+                    .handled_net(NetworkAccess::from_bits(0x8000000A))
+                    .scoped(ScopeAccess::from_bits(0x80000003))
+                    .build(),
+            ),
+            Event::AddRuleFs(
+                AddRuleFsEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(0x2200000000000002))
+                    .ruleset_id(RulesetId::new(0xA200000000000002).unwrap())
+                    .ruleset_version(0x23000002)
+                    .access_rights(FilesystemAccess::from_bits(0x80004006))
+                    .device(0x34000002)
+                    .inode(0x4500000000000002)
+                    .pathname(captured(b"/fixture/\xff\x1b", false))
+                    .build(),
+            ),
+            Event::AddRuleNet(
+                AddRuleNetEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(0x3300000000000003))
+                    .ruleset_id(RulesetId::new(0xA300000000000003).unwrap())
+                    .ruleset_version(0x34000003)
+                    .access_rights(NetworkAccess::from_bits(0x80000009))
+                    .port(0x5600000000000003)
+                    .build(),
+            ),
+            Event::CreateDomain(
+                CreateDomainEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(0x4400000000000004))
+                    .ruleset_id(RulesetId::new(0xA400000000000004).unwrap())
+                    .ruleset_version(0x45000004)
+                    .domain_id(DomainId::new(0xD400000000000004).unwrap())
+                    .parent_id(None)
+                    .creator_tgid(0x56000004)
+                    .creator_comm(captured(b"sixteen-byte-cmd", true))
+                    .build(),
+            ),
+            Event::DenyAccessFs(
+                DenyAccessFsEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(0x5500000000000005))
+                    .context(context(
+                        0xD000000000000005,
+                        None,
+                        0x51000005,
+                        captured(b"creator-5", false),
+                        0xC100000000000005,
+                        true,
+                        false,
+                    ))
+                    .blockers(FilesystemAccess::from_bits(0x80010005))
+                    .device(0x72000005)
+                    .inode(0x8300000000000005)
+                    .pathname(captured(vec![b'P'; 256], true))
+                    .build(),
+            ),
+            Event::DenyAccessNet(
+                DenyAccessNetEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(0x6600000000000006))
+                    .context(context(
+                        0xD000000000000006,
+                        Some(0xA000000000000006),
+                        0x51000006,
+                        captured(b"creator-6", false),
+                        0xC100000000000006,
+                        false,
+                        true,
+                    ))
+                    .blockers(NetworkAccess::from_bits(0x80010006))
+                    .source_port(0x7400000000000006)
+                    .destination_port(0x8500000000000006)
+                    .build(),
+            ),
+            Event::DenyPtrace(
+                DenyPtraceEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(0x7700000000000007))
+                    .context(context(
+                        0xD000000000000007,
+                        Some(0xA000000000000007),
+                        0x51000007,
+                        captured(b"creator-7", false),
+                        0xC100000000000007,
+                        true,
+                        true,
+                    ))
+                    .tracee_domain(DomainMembership::Unsandboxed)
+                    .tracee_pid(0x86000007)
+                    .tracee_comm(captured(b"ptrace-target", false))
+                    .build(),
+            ),
+            Event::DenyScopeSignal(
+                DenyScopeSignalEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(0x8800000000000008))
+                    .context(context(
+                        0xD000000000000008,
+                        Some(0xA000000000000008),
+                        0x51000008,
+                        captured(b"creator-8", false),
+                        0xC100000000000008,
+                        false,
+                        false,
+                    ))
+                    .target_domain(DomainMembership::Sandboxed(
+                        DomainId::new(0xE800000000000008).unwrap(),
+                    ))
+                    .target_pid(0x97000008)
+                    .target_comm(captured(b"signal-target", false))
+                    .build(),
+            ),
+            Event::DenyScopeAbstractUnixSocket(
+                DenyScopeAbstractUnixSocketEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(0x9900000000000009))
+                    .context(context(
+                        0xD000000000000009,
+                        Some(0xA000000000000009),
+                        0x51000009,
+                        captured(b"sixteen-byte-cmd", true),
+                        0xC100000000000009,
+                        true,
+                        false,
+                    ))
+                    .peer_domain(DomainMembership::Sandboxed(
+                        DomainId::new(0xE900000000000009).unwrap(),
+                    ))
+                    .peer_pid(0xA8000009)
+                    .build(),
+            ),
+            Event::FreeDomain(
+                FreeDomainEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(0xAA0000000000000A))
+                    .domain_id(DomainId::new(0xDA0000000000000A).unwrap())
+                    .denial_count(0xAB0000000000000A)
+                    .build(),
+            ),
+            Event::FreeRuleset(
+                FreeRulesetEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(0xBB0000000000000B))
+                    .ruleset_id(RulesetId::new(0xAB0000000000000B).unwrap())
+                    .ruleset_version(0xBC00000B)
+                    .build(),
+            ),
+            Event::EnforceDomain(
+                EnforceDomainEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(0xCC0000000000000C))
+                    .domain_id(DomainId::new(0xDC0000000000000C).unwrap())
+                    .enforcing_tid(0xCD00000C)
+                    .complete(true)
+                    .process_wide(false)
+                    .no_new_privs(true)
+                    .build(),
+            ),
         ];
 
         for (fixture, expected) in FIXTURES.iter().zip(expected) {
@@ -778,11 +853,13 @@ mod tests {
         );
         assert_eq!(
             event,
-            Event::Unknown(UnknownEvent::new(
-                KernelTimestamp::from_nanoseconds(0x1100000000000001),
-                0xF3,
-                RECORD_SIZE
-            ))
+            Event::Unknown(
+                UnknownEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(0x1100000000000001))
+                    .numeric_kind(0xF3)
+                    .record_length(RECORD_SIZE)
+                    .build()
+            )
         );
     }
 

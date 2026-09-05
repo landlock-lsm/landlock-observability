@@ -175,11 +175,13 @@ fn process(event: &Event, state: &mut State, denials: &mut DenialAggregator) {
     denials.observe(event);
 }
 
-let event = Event::Unknown(UnknownEvent::new(
-    KernelTimestamp::from_nanoseconds(1),
-    255,
-    32,
-));
+let event = Event::Unknown(
+    UnknownEvent::builder()
+        .timestamp(KernelTimestamp::from_nanoseconds(1))
+        .numeric_kind(255)
+        .record_length(32)
+        .build(),
+);
 let mut state = State::new();
 let mut denials = DenialAggregator::new();
 process(&event, &mut state, &mut denials);

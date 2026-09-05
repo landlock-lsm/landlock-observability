@@ -152,15 +152,19 @@ mod tests {
     };
 
     fn create(id_offset: u64, parent_offset: Option<u64>) -> Event {
-        Event::CreateDomain(CreateDomainEvent::new(
-            KernelTimestamp::from_nanoseconds(id_offset),
-            RulesetId::new(MIN_LANDLOCK_ID + 1).unwrap(),
-            0,
-            DomainId::new(MIN_LANDLOCK_ID + id_offset).unwrap(),
-            parent_offset.map(|offset| DomainId::new(MIN_LANDLOCK_ID + offset).unwrap()),
-            1,
-            CapturedString::new(b"x".to_vec(), false).unwrap(),
-        ))
+        Event::CreateDomain(
+            CreateDomainEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(id_offset))
+                .ruleset_id(RulesetId::new(MIN_LANDLOCK_ID + 1).unwrap())
+                .ruleset_version(0)
+                .domain_id(DomainId::new(MIN_LANDLOCK_ID + id_offset).unwrap())
+                .parent_id(
+                    parent_offset.map(|offset| DomainId::new(MIN_LANDLOCK_ID + offset).unwrap()),
+                )
+                .creator_tgid(1)
+                .creator_comm(CapturedString::new(b"x".to_vec(), false).unwrap())
+                .build(),
+        )
     }
 
     #[test]
@@ -174,14 +178,16 @@ mod tests {
         ] {
             model.observe(&event);
         }
-        model.observe(&Event::EnforceDomain(EnforceDomainEvent::new(
-            KernelTimestamp::from_nanoseconds(5),
-            DomainId::new(MIN_LANDLOCK_ID + 5).unwrap(),
-            1,
-            true,
-            false,
-            true,
-        )));
+        model.observe(&Event::EnforceDomain(
+            EnforceDomainEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(5))
+                .domain_id(DomainId::new(MIN_LANDLOCK_ID + 5).unwrap())
+                .enforcing_tid(1)
+                .complete(true)
+                .process_wide(false)
+                .no_new_privs(true)
+                .build(),
+        ));
         assert_eq!(model.allocated_domains(), 5);
         assert_eq!(model.allocated_rulesets(), 1);
         assert_eq!(

@@ -575,11 +575,13 @@ mod tests {
         include_bytes!("../tests/fixtures/wire/11-ruleset-free-big-endian.bin");
 
     fn event(id_offset: u64) -> Event {
-        Event::FreeRuleset(FreeRulesetEvent::new(
-            KernelTimestamp::from_nanoseconds(id_offset),
-            RulesetId::new(MIN_LANDLOCK_ID + id_offset).unwrap(),
-            id_offset as u32,
-        ))
+        Event::FreeRuleset(
+            FreeRulesetEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(id_offset))
+                .ruleset_id(RulesetId::new(MIN_LANDLOCK_ID + id_offset).unwrap())
+                .ruleset_version(id_offset as u32)
+                .build(),
+        )
     }
 
     fn sample(timestamp: u64) -> [u8; 344] {

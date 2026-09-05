@@ -353,24 +353,6 @@ pub struct HierarchySnapshot {
 }
 
 impl HierarchySnapshot {
-    /// Creates a hierarchy snapshot.
-    ///
-    /// A present `parent_id` is expected to be nonzero; use `None` for a
-    /// domain without a parent.
-    pub fn new(
-        domain_id: DomainId,
-        parent_id: Option<DomainId>,
-        creator_tgid: u32,
-        creator_comm: CapturedString,
-    ) -> Self {
-        Self {
-            domain_id,
-            parent_id,
-            creator_tgid,
-            creator_comm,
-        }
-    }
-
     /// Returns the denying domain identity.
     pub const fn domain_id(&self) -> DomainId {
         self.domain_id
@@ -390,6 +372,24 @@ impl HierarchySnapshot {
 }
 
 /// Facts shared by all denial events.
+///
+/// # Compile-time field checks
+///
+/// Missing required fields prevent building:
+///
+/// ```compile_fail
+/// use landlock_observability::event::DenialContext;
+///
+/// DenialContext::builder().same_exec(false).logged(true).build();
+/// ```
+///
+/// A field cannot be supplied twice:
+///
+/// ```compile_fail
+/// use landlock_observability::event::DenialContext;
+///
+/// DenialContext::builder().same_exec(false).same_exec(true);
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct DenialContext {
@@ -400,21 +400,6 @@ pub struct DenialContext {
 }
 
 impl DenialContext {
-    /// Creates shared denial facts.
-    pub fn new(
-        hierarchy: HierarchySnapshot,
-        cumulative_denial_count: u64,
-        same_exec: bool,
-        logged: bool,
-    ) -> Self {
-        Self {
-            hierarchy,
-            cumulative_denial_count,
-            same_exec,
-            logged,
-        }
-    }
-
     /// Returns the hierarchy snapshot.
     pub const fn hierarchy(&self) -> &HierarchySnapshot {
         &self.hierarchy
@@ -449,7 +434,171 @@ pub trait Denial: Observation {
     fn context(&self) -> &DenialContext;
 }
 
+/// A field that has not yet been supplied to a typestate builder.
+///
+/// Builders use this public typestate marker to make missing required fields a
+/// compile-time error. It cannot be constructed outside this crate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct Missing;
+
+/// A field that has been supplied to a typestate builder.
+///
+/// Builders use this public typestate marker to prevent a required field from
+/// being supplied more than once. Its value is intentionally private.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct Present<T>(T);
+
+impl<T> Present<T> {
+    fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+macro_rules! typestate_builder_setters {
+    (
+        $builder:ident;
+        [];
+        $field:ident : $state:ident => $value:ty, $setter_doc:literal;
+        $($after_field:ident : $after_state:ident => $after_value:ty, $after_doc:literal;)*
+    ) => {
+        typestate_builder_setters!(
+            $builder;
+            [];
+            $field : $state => $value, $setter_doc;
+            [$($after_field : $after_state => $after_value, $after_doc;)*]
+        );
+    };
+    (
+        $builder:ident;
+        [$($before_field:ident : $before_state:ident),*];
+        $field:ident : $state:ident => $value:ty, $setter_doc:literal;
+        [$($after_field:ident : $after_state:ident => $after_value:ty, $after_doc:literal;)*]
+    ) => {
+        impl<$($before_state,)* $($after_state,)*>
+            $builder<$($before_state,)* Missing, $($after_state,)*>
+        {
+            #[doc = $setter_doc]
+            pub fn $field(
+                self,
+                value: $value,
+            ) -> $builder<$($before_state,)* Present<$value>, $($after_state,)*> {
+                let Self {
+                    $($before_field,)*
+                    $field: _,
+                    $($after_field,)*
+                } = self;
+                $builder {
+                    $($before_field,)*
+                    $field: Present(value),
+                    $($after_field,)*
+                }
+            }
+        }
+
+        typestate_builder_setters!(
+            @next $builder;
+            [$($before_field : $before_state,)* $field : $state];
+            [$($after_field : $after_state => $after_value, $after_doc;)*]
+        );
+    };
+    (
+        @next $builder:ident;
+        [$($before:tt)*];
+        [$field:ident : $state:ident => $value:ty, $setter_doc:literal;
+         $($after:tt)*]
+    ) => {
+        typestate_builder_setters!(
+            $builder;
+            [$($before)*];
+            $field : $state => $value, $setter_doc;
+            [$($after)*]
+        );
+    };
+    (@next $builder:ident; [$($before:tt)*]; []) => {};
+}
+
+macro_rules! typestate_builder {
+    (
+        $target:ident, $builder:ident, $builder_doc:literal;
+        $($field:ident : $state:ident => $value:ty, $setter_doc:literal;)+
+    ) => {
+        #[doc = $builder_doc]
+        ///
+        /// Each required field has a named setter. Setters may be called in
+        /// any order, and [`build()`](Self::build) is available only after
+        /// every field has been supplied.
+        #[derive(Clone, Debug, Eq, PartialEq)]
+        #[non_exhaustive]
+        pub struct $builder<$($state = Missing),+> {
+            $($field: $state),+
+        }
+
+        impl $target {
+            /// Returns an argument-free builder for this value.
+            pub fn builder() -> $builder {
+                $builder {
+                    $($field: Missing),+
+                }
+            }
+        }
+
+        typestate_builder_setters!(
+            $builder;
+            [];
+            $($field : $state => $value, $setter_doc;)+
+        );
+
+        impl $builder<$(Present<$value>),+> {
+            /// Builds the value after every required field has been supplied.
+            pub fn build(self) -> $target {
+                $target {
+                    $($field: self.$field.into_inner()),+
+                }
+            }
+        }
+    };
+}
+
+typestate_builder!(
+    HierarchySnapshot, HierarchySnapshotBuilder, "A typestate builder for [`HierarchySnapshot`].";
+    domain_id: DomainIdState => DomainId, "Sets the denying domain identity.";
+    parent_id: ParentId => Option<DomainId>, "Sets the parent domain identity, or `None` for no parent.";
+    creator_tgid: CreatorTgid => u32, "Sets the thread-group ID that created the domain.";
+    creator_comm: CreatorComm => CapturedString, "Sets the captured creator command.";
+);
+typestate_builder!(
+    DenialContext, DenialContextBuilder, "A typestate builder for [`DenialContext`].";
+    hierarchy: Hierarchy => HierarchySnapshot, "Sets the hierarchy snapshot.";
+    cumulative_denial_count: CumulativeDenialCount => u64, "Sets the kernel's cumulative denial count.";
+    same_exec: SameExec => bool, "Sets whether the denial occurred in the creator's executable image.";
+    logged: Logged => bool, "Sets whether the kernel selected the denial for audit logging.";
+);
+
 /// A ruleset creation event.
+///
+/// # Compile-time field checks
+///
+/// Missing required fields prevent building:
+///
+/// ```compile_fail
+/// use landlock_observability::event::{CreateRulesetEvent, KernelTimestamp};
+///
+/// CreateRulesetEvent::builder()
+///     .timestamp(KernelTimestamp::from_nanoseconds(1))
+///     .build();
+/// ```
+///
+/// A field cannot be supplied twice:
+///
+/// ```compile_fail
+/// use landlock_observability::event::{CreateRulesetEvent, KernelTimestamp};
+///
+/// CreateRulesetEvent::builder()
+///     .timestamp(KernelTimestamp::from_nanoseconds(1))
+///     .timestamp(KernelTimestamp::from_nanoseconds(2));
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct CreateRulesetEvent {
@@ -460,25 +609,16 @@ pub struct CreateRulesetEvent {
     handled_net: NetworkAccess,
     scoped: ScopeAccess,
 }
+typestate_builder!(
+    CreateRulesetEvent, CreateRulesetEventBuilder, "A typestate builder for [`CreateRulesetEvent`].";
+    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
+    ruleset_id: RulesetIdState => RulesetId, "Sets the kernel-assigned ruleset identity.";
+    ruleset_version: RulesetVersion => u32, "Sets the captured ruleset version.";
+    handled_fs: HandledFs => FilesystemAccess, "Sets the handled filesystem access rights.";
+    handled_net: HandledNet => NetworkAccess, "Sets the handled network access rights.";
+    scoped: Scoped => ScopeAccess, "Sets the scoped access rights.";
+);
 impl CreateRulesetEvent {
-    /// Creates an event.
-    pub fn new(
-        timestamp: KernelTimestamp,
-        ruleset_id: RulesetId,
-        ruleset_version: u32,
-        handled_fs: FilesystemAccess,
-        handled_net: NetworkAccess,
-        scoped: ScopeAccess,
-    ) -> Self {
-        Self {
-            timestamp,
-            ruleset_id,
-            ruleset_version,
-            handled_fs,
-            handled_net,
-            scoped,
-        }
-    }
     /// Returns the kernel-assigned ruleset identity.
     pub const fn ruleset_id(&self) -> RulesetId {
         self.ruleset_id
@@ -519,27 +659,17 @@ pub struct AddRuleFsEvent {
     inode: u64,
     pathname: CapturedString,
 }
+typestate_builder!(
+    AddRuleFsEvent, AddRuleFsEventBuilder, "A typestate builder for [`AddRuleFsEvent`].";
+    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
+    ruleset_id: RulesetIdState => RulesetId, "Sets the kernel-assigned ruleset identity.";
+    ruleset_version: RulesetVersion => u32, "Sets the captured ruleset version.";
+    access_rights: AccessRights => FilesystemAccess, "Sets the filesystem access rights allowed by the rule.";
+    device: Device => u32, "Sets the captured filesystem device number.";
+    inode: Inode => u64, "Sets the captured filesystem inode number.";
+    pathname: Pathname => CapturedString, "Sets the captured filesystem pathname.";
+);
 impl AddRuleFsEvent {
-    /// Creates this semantic value from its captured fields.
-    pub fn new(
-        timestamp: KernelTimestamp,
-        ruleset_id: RulesetId,
-        ruleset_version: u32,
-        access_rights: FilesystemAccess,
-        device: u32,
-        inode: u64,
-        pathname: CapturedString,
-    ) -> Self {
-        Self {
-            timestamp,
-            ruleset_id,
-            ruleset_version,
-            access_rights,
-            device,
-            inode,
-            pathname,
-        }
-    }
     /// Returns the kernel-assigned ruleset identity.
     pub const fn ruleset_id(&self) -> RulesetId {
         self.ruleset_id
@@ -582,23 +712,15 @@ pub struct AddRuleNetEvent {
     access_rights: NetworkAccess,
     port: u64,
 }
+typestate_builder!(
+    AddRuleNetEvent, AddRuleNetEventBuilder, "A typestate builder for [`AddRuleNetEvent`].";
+    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
+    ruleset_id: RulesetIdState => RulesetId, "Sets the kernel-assigned ruleset identity.";
+    ruleset_version: RulesetVersion => u32, "Sets the captured ruleset version.";
+    access_rights: AccessRights => NetworkAccess, "Sets the network access rights allowed by the rule.";
+    port: Port => u64, "Sets the captured network-rule port.";
+);
 impl AddRuleNetEvent {
-    /// Creates this semantic value from its captured fields.
-    pub const fn new(
-        timestamp: KernelTimestamp,
-        ruleset_id: RulesetId,
-        ruleset_version: u32,
-        access_rights: NetworkAccess,
-        port: u64,
-    ) -> Self {
-        Self {
-            timestamp,
-            ruleset_id,
-            ruleset_version,
-            access_rights,
-            port,
-        }
-    }
     /// Returns the kernel-assigned ruleset identity.
     pub const fn ruleset_id(&self) -> RulesetId {
         self.ruleset_id
@@ -635,30 +757,17 @@ pub struct CreateDomainEvent {
     creator_tgid: u32,
     creator_comm: CapturedString,
 }
+typestate_builder!(
+    CreateDomainEvent, CreateDomainEventBuilder, "A typestate builder for [`CreateDomainEvent`].";
+    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
+    ruleset_id: RulesetIdState => RulesetId, "Sets the kernel-assigned ruleset identity.";
+    ruleset_version: RulesetVersion => u32, "Sets the ruleset version frozen into the domain.";
+    domain_id: DomainIdState => DomainId, "Sets the kernel-assigned domain identity.";
+    parent_id: ParentId => Option<DomainId>, "Sets the parent domain identity, or `None` for no parent.";
+    creator_tgid: CreatorTgid => u32, "Sets the thread-group ID of the domain creator.";
+    creator_comm: CreatorComm => CapturedString, "Sets the captured command of the domain creator.";
+);
 impl CreateDomainEvent {
-    /// Creates this semantic value from its captured fields.
-    ///
-    /// A present `parent_id` is expected to be nonzero; use `None` for a
-    /// domain without a parent.
-    pub fn new(
-        timestamp: KernelTimestamp,
-        ruleset_id: RulesetId,
-        ruleset_version: u32,
-        domain_id: DomainId,
-        parent_id: Option<DomainId>,
-        creator_tgid: u32,
-        creator_comm: CapturedString,
-    ) -> Self {
-        Self {
-            timestamp,
-            ruleset_id,
-            ruleset_version,
-            domain_id,
-            parent_id,
-            creator_tgid,
-            creator_comm,
-        }
-    }
     /// Returns the kernel-assigned ruleset identity.
     pub const fn ruleset_id(&self) -> RulesetId {
         self.ruleset_id
@@ -702,25 +811,16 @@ pub struct DenyAccessFsEvent {
     inode: u64,
     pathname: CapturedString,
 }
+typestate_builder!(
+    DenyAccessFsEvent, DenyAccessFsEventBuilder, "A typestate builder for [`DenyAccessFsEvent`].";
+    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
+    context: Context => DenialContext, "Sets the facts shared by denial events.";
+    blockers: Blockers => FilesystemAccess, "Sets the filesystem access rights that blocked the operation.";
+    device: Device => u32, "Sets the captured filesystem device number.";
+    inode: Inode => u64, "Sets the captured filesystem inode number.";
+    pathname: Pathname => CapturedString, "Sets the captured filesystem pathname.";
+);
 impl DenyAccessFsEvent {
-    /// Creates this semantic value from its captured fields.
-    pub fn new(
-        timestamp: KernelTimestamp,
-        context: DenialContext,
-        blockers: FilesystemAccess,
-        device: u32,
-        inode: u64,
-        pathname: CapturedString,
-    ) -> Self {
-        Self {
-            timestamp,
-            context,
-            blockers,
-            device,
-            inode,
-            pathname,
-        }
-    }
     /// Returns the access rights that blocked the operation.
     pub const fn blockers(&self) -> FilesystemAccess {
         self.blockers
@@ -760,23 +860,15 @@ pub struct DenyAccessNetEvent {
     source_port: u64,
     destination_port: u64,
 }
+typestate_builder!(
+    DenyAccessNetEvent, DenyAccessNetEventBuilder, "A typestate builder for [`DenyAccessNetEvent`].";
+    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
+    context: Context => DenialContext, "Sets the facts shared by denial events.";
+    blockers: Blockers => NetworkAccess, "Sets the network access rights that blocked the operation.";
+    source_port: SourcePort => u64, "Sets the captured bind-side source port.";
+    destination_port: DestinationPort => u64, "Sets the captured connect or send-side destination port.";
+);
 impl DenyAccessNetEvent {
-    /// Creates this semantic value from its captured fields.
-    pub const fn new(
-        timestamp: KernelTimestamp,
-        context: DenialContext,
-        blockers: NetworkAccess,
-        source_port: u64,
-        destination_port: u64,
-    ) -> Self {
-        Self {
-            timestamp,
-            context,
-            blockers,
-            source_port,
-            destination_port,
-        }
-    }
     /// Returns the access rights that blocked the operation.
     pub const fn blockers(&self) -> NetworkAccess {
         self.blockers
@@ -812,23 +904,15 @@ pub struct DenyPtraceEvent {
     tracee_pid: u32,
     tracee_comm: CapturedString,
 }
+typestate_builder!(
+    DenyPtraceEvent, DenyPtraceEventBuilder, "A typestate builder for [`DenyPtraceEvent`].";
+    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
+    context: Context => DenialContext, "Sets the facts shared by denial events.";
+    tracee_domain: TraceeDomain => DomainMembership, "Sets the tracee domain membership.";
+    tracee_pid: TraceePid => u32, "Sets the thread-group ID of the tracee.";
+    tracee_comm: TraceeComm => CapturedString, "Sets the captured command of the tracee.";
+);
 impl DenyPtraceEvent {
-    /// Creates this semantic value from its captured fields.
-    pub fn new(
-        timestamp: KernelTimestamp,
-        context: DenialContext,
-        tracee_domain: DomainMembership,
-        tracee_pid: u32,
-        tracee_comm: CapturedString,
-    ) -> Self {
-        Self {
-            timestamp,
-            context,
-            tracee_domain,
-            tracee_pid,
-            tracee_comm,
-        }
-    }
     /// Returns whether the tracee was unsandboxed or in a domain.
     pub const fn tracee_domain(&self) -> DomainMembership {
         self.tracee_domain
@@ -864,23 +948,15 @@ pub struct DenyScopeSignalEvent {
     target_pid: u32,
     target_comm: CapturedString,
 }
+typestate_builder!(
+    DenyScopeSignalEvent, DenyScopeSignalEventBuilder, "A typestate builder for [`DenyScopeSignalEvent`].";
+    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
+    context: Context => DenialContext, "Sets the facts shared by denial events.";
+    target_domain: TargetDomain => DomainMembership, "Sets the target domain membership.";
+    target_pid: TargetPid => u32, "Sets the thread-group ID of the target.";
+    target_comm: TargetComm => CapturedString, "Sets the captured command of the target.";
+);
 impl DenyScopeSignalEvent {
-    /// Creates this semantic value from its captured fields.
-    pub fn new(
-        timestamp: KernelTimestamp,
-        context: DenialContext,
-        target_domain: DomainMembership,
-        target_pid: u32,
-        target_comm: CapturedString,
-    ) -> Self {
-        Self {
-            timestamp,
-            context,
-            target_domain,
-            target_pid,
-            target_comm,
-        }
-    }
     /// Returns whether the target was unsandboxed or in a domain.
     pub const fn target_domain(&self) -> DomainMembership {
         self.target_domain
@@ -915,21 +991,14 @@ pub struct DenyScopeAbstractUnixSocketEvent {
     peer_domain: DomainMembership,
     peer_pid: u32,
 }
+typestate_builder!(
+    DenyScopeAbstractUnixSocketEvent, DenyScopeAbstractUnixSocketEventBuilder, "A typestate builder for [`DenyScopeAbstractUnixSocketEvent`].";
+    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
+    context: Context => DenialContext, "Sets the facts shared by denial events.";
+    peer_domain: PeerDomain => DomainMembership, "Sets the socket peer domain membership.";
+    peer_pid: PeerPid => u32, "Sets the socket peer PID.";
+);
 impl DenyScopeAbstractUnixSocketEvent {
-    /// Creates this semantic value from its captured fields.
-    pub const fn new(
-        timestamp: KernelTimestamp,
-        context: DenialContext,
-        peer_domain: DomainMembership,
-        peer_pid: u32,
-    ) -> Self {
-        Self {
-            timestamp,
-            context,
-            peer_domain,
-            peer_pid,
-        }
-    }
     /// Returns whether the peer was unsandboxed or in a domain.
     pub const fn peer_domain(&self) -> DomainMembership {
         self.peer_domain
@@ -959,15 +1028,13 @@ pub struct FreeDomainEvent {
     domain_id: DomainId,
     denial_count: u64,
 }
+typestate_builder!(
+    FreeDomainEvent, FreeDomainEventBuilder, "A typestate builder for [`FreeDomainEvent`].";
+    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
+    domain_id: DomainIdState => DomainId, "Sets the kernel-assigned domain identity.";
+    denial_count: DenialCount => u64, "Sets the final cumulative kernel denial count.";
+);
 impl FreeDomainEvent {
-    /// Creates this semantic value from its captured fields.
-    pub const fn new(timestamp: KernelTimestamp, domain_id: DomainId, denial_count: u64) -> Self {
-        Self {
-            timestamp,
-            domain_id,
-            denial_count,
-        }
-    }
     /// Returns the kernel-assigned domain identity.
     pub const fn domain_id(&self) -> DomainId {
         self.domain_id
@@ -992,19 +1059,13 @@ pub struct FreeRulesetEvent {
     ruleset_id: RulesetId,
     ruleset_version: u32,
 }
+typestate_builder!(
+    FreeRulesetEvent, FreeRulesetEventBuilder, "A typestate builder for [`FreeRulesetEvent`].";
+    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
+    ruleset_id: RulesetIdState => RulesetId, "Sets the kernel-assigned ruleset identity.";
+    ruleset_version: RulesetVersion => u32, "Sets the final ruleset version.";
+);
 impl FreeRulesetEvent {
-    /// Creates this semantic value from its captured fields.
-    pub const fn new(
-        timestamp: KernelTimestamp,
-        ruleset_id: RulesetId,
-        ruleset_version: u32,
-    ) -> Self {
-        Self {
-            timestamp,
-            ruleset_id,
-            ruleset_version,
-        }
-    }
     /// Returns the kernel-assigned ruleset identity.
     pub const fn ruleset_id(&self) -> RulesetId {
         self.ruleset_id
@@ -1032,25 +1093,16 @@ pub struct EnforceDomainEvent {
     process_wide: bool,
     no_new_privs: bool,
 }
+typestate_builder!(
+    EnforceDomainEvent, EnforceDomainEventBuilder, "A typestate builder for [`EnforceDomainEvent`].";
+    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
+    domain_id: DomainIdState => DomainId, "Sets the kernel-assigned domain identity.";
+    enforcing_tid: EnforcingTid => u32, "Sets the thread ID reporting the enforcement outcome.";
+    complete: Complete => bool, "Sets whether this is the concluding enforcement event.";
+    process_wide: ProcessWide => bool, "Sets whether eligible sibling threads were covered or none existed.";
+    no_new_privs: NoNewPrivs => bool, "Sets whether the enforcing thread had `no_new_privs` set.";
+);
 impl EnforceDomainEvent {
-    /// Creates this semantic value from its captured fields.
-    pub const fn new(
-        timestamp: KernelTimestamp,
-        domain_id: DomainId,
-        enforcing_tid: u32,
-        complete: bool,
-        process_wide: bool,
-        no_new_privs: bool,
-    ) -> Self {
-        Self {
-            timestamp,
-            domain_id,
-            enforcing_tid,
-            complete,
-            process_wide,
-            no_new_privs,
-        }
-    }
     /// Returns the kernel-assigned domain identity.
     pub const fn domain_id(&self) -> DomainId {
         self.domain_id
@@ -1082,6 +1134,9 @@ impl Observation for EnforceDomainEvent {
 }
 
 /// An event kind not understood by this library.
+///
+/// The producer's numeric kind is retained so an observation from a newer
+/// producer is not discarded.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct UnknownEvent {
@@ -1089,18 +1144,13 @@ pub struct UnknownEvent {
     numeric_kind: u8,
     record_length: usize,
 }
+typestate_builder!(
+    UnknownEvent, UnknownEventBuilder, "A typestate builder for [`UnknownEvent`].";
+    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
+    numeric_kind: NumericKind => u8, "Sets the producer numeric event kind.";
+    record_length: RecordLength => usize, "Sets the length of the record carrying the unknown kind.";
+);
 impl UnknownEvent {
-    /// Creates an event for an unrecognized producer kind.
-    ///
-    /// An unknown event retains its numeric kind so a newer producer
-    /// observation is not discarded.
-    pub const fn new(timestamp: KernelTimestamp, numeric_kind: u8, record_length: usize) -> Self {
-        Self {
-            timestamp,
-            numeric_kind,
-            record_length,
-        }
-    }
     /// Returns the producer's unrecognized numeric event kind.
     pub const fn numeric_kind(&self) -> u8 {
         self.numeric_kind
@@ -1173,6 +1223,61 @@ impl Observation for Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_builders_accept_all_fields_in_any_order() {
+        let timestamp = KernelTimestamp::from_nanoseconds(7);
+        let ruleset_id = RulesetId::new(MIN_LANDLOCK_ID).unwrap();
+        let event = CreateRulesetEvent::builder()
+            .scoped(ScopeAccess::from_bits(6))
+            .handled_net(NetworkAccess::from_bits(5))
+            .handled_fs(FilesystemAccess::from_bits(4))
+            .ruleset_version(3)
+            .ruleset_id(ruleset_id)
+            .timestamp(timestamp)
+            .build();
+
+        assert_eq!(event.timestamp(), timestamp);
+        assert_eq!(event.ruleset_id(), ruleset_id);
+        assert_eq!(event.ruleset_version(), 3);
+        assert_eq!(event.handled_fs().bits(), 4);
+        assert_eq!(event.handled_net().bits(), 5);
+        assert_eq!(event.scoped().bits(), 6);
+
+        let domain_id = DomainId::new(MIN_LANDLOCK_ID + 1).unwrap();
+        let parent_id = DomainId::new(MIN_LANDLOCK_ID + 2).unwrap();
+        let creator_comm = CapturedString::new(b"creator".to_vec(), false).unwrap();
+        let hierarchy = HierarchySnapshot::builder()
+            .creator_comm(creator_comm.clone())
+            .domain_id(domain_id)
+            .creator_tgid(8)
+            .parent_id(Some(parent_id))
+            .build();
+        assert_eq!(hierarchy.domain_id(), domain_id);
+        assert_eq!(hierarchy.parent_id(), Some(parent_id));
+        assert_eq!(hierarchy.creator_tgid(), 8);
+        assert_eq!(hierarchy.creator_comm(), &creator_comm);
+
+        let context = DenialContext::builder()
+            .logged(true)
+            .hierarchy(hierarchy.clone())
+            .same_exec(false)
+            .cumulative_denial_count(9)
+            .build();
+        assert_eq!(context.hierarchy(), &hierarchy);
+        assert_eq!(context.cumulative_denial_count(), 9);
+        assert!(!context.same_exec());
+        assert!(context.logged());
+
+        let unknown = UnknownEvent::builder()
+            .record_length(344)
+            .timestamp(timestamp)
+            .numeric_kind(255)
+            .build();
+        assert_eq!(unknown.timestamp(), timestamp);
+        assert_eq!(unknown.numeric_kind(), 255);
+        assert_eq!(unknown.record_length(), 344);
+    }
 
     #[test]
     fn access_names_and_unknown_bits() {
