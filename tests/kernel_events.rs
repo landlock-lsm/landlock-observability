@@ -674,6 +674,7 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
     let ptrace_comm = decode_hex(fields[8])?;
     let signal_comm = decode_hex(fields[9])?;
     let allowed_path = decode_hex(fields[10])?;
+    let abstract_name = fields[11].as_bytes();
     assert_ne!(enforcing_tid, creator_tgid);
 
     let mut events = Vec::new();
@@ -848,6 +849,7 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
                 denial_counts.push(value.context().cumulative_denial_count());
                 assert_eq!(value.peer_domain(), DomainMembership::Unsandboxed);
                 assert_eq!(value.peer_pid(), unix_pid);
+                assert_eq!(value.abstract_name().as_bytes(), abstract_name);
             }
             ExpectedEventKind::FreeDomain => {
                 let value = expect_event!(event, kind, FreeDomain);

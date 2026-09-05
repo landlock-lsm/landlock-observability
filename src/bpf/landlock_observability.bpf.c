@@ -31,6 +31,51 @@ static __always_inline void submit_event(void *ev)
 	bpf_ringbuf_submit(ev, 0);
 }
 
+static __always_inline void discard_event(void *ev)
+{
+	bpf_ringbuf_discard(ev, 0);
+}
+
+/* Capture the abstract UNIX socket name, excluding its namespace NUL. */
+static __always_inline bool
+capture_abstract_unix_socket_name(char dst[ABSTRACT_UNIX_SOCKET_NAME_MAX_LEN],
+				  __u32 *dst_len, const struct sock *peer)
+{
+	/* unix_sk() is this cast: struct sock is unix_sock's first member. */
+	const struct unix_sock *unix_peer = (const struct unix_sock *)peer;
+	const struct unix_address *addr;
+	const char *sun_path;
+	const int prefix_len =
+		(int)__builtin_offsetof(struct sockaddr_un, sun_path) + 1;
+	char namespace;
+	int sockaddr_len;
+	__u32 name_len;
+
+	addr = BPF_CORE_READ(unix_peer, addr);
+	if (!addr) {
+		*dst_len = 0;
+		return 1;
+	}
+
+	/* No unknown API state: fabricating empty corrupts identity. */
+	sockaddr_len = BPF_CORE_READ(addr, len);
+	if (sockaddr_len < prefix_len ||
+	    sockaddr_len > prefix_len + ABSTRACT_UNIX_SOCKET_NAME_MAX_LEN)
+		return 0;
+	name_len = (__u32)(sockaddr_len - prefix_len);
+
+	sun_path = __builtin_preserve_access_index(&addr->name[0].sun_path[0]);
+	if (bpf_probe_read_kernel(&namespace, sizeof(namespace), sun_path))
+		return 0;
+	if (namespace != '\0')
+		return 0;
+	if (name_len && bpf_probe_read_kernel(dst, name_len, sun_path + 1))
+		return 0;
+
+	*dst_len = name_len;
+	return 1;
+}
+
 /*
  * Read two bytes beyond the payload boundary.  The returned length includes
  * NUL, so PATH_MAX_LEN + 1 is an exact-fit source while a larger result proves
@@ -324,11 +369,19 @@ int BPF_PROG(handle_deny_scope_abstract_unix_socket,
 	     const struct landlock_hierarchy *hierarchy, bool same_exec,
 	     bool logged, u64 peer_domain_id, const struct sock *peer)
 {
-	struct landlock_observability_event *ev = alloc_event();
+	struct landlock_observability_event *ev;
 	const struct pid *peer_pid;
 
+	ev = alloc_event();
 	if (!ev)
 		return 0;
+	if (!capture_abstract_unix_socket_name(
+		    ev->deny_scope_abstract_unix_socket.abstract_name,
+		    &ev->deny_scope_abstract_unix_socket.abstract_name_len,
+		    peer)) {
+		discard_event(ev);
+		return 0;
+	}
 
 	ev->timestamp_ns = bpf_ktime_get_ns();
 	ev->type = EVENT_DENY_SCOPE_ABSTRACT_UNIX_SOCKET;

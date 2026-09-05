@@ -101,6 +101,9 @@ def encoded_fixtures(byte_order: str, suffix: str) -> dict[str, bytes]:
 
     data = record(9, 0x9900000000000009, byte_order); denial(data, 9, 1, 0, byte_order)
     u64(data, 72, 0xE900000000000009, byte_order); u32(data, 80, 0xA8000009, byte_order)
+    abstract_name = b"service\0\xff\0"
+    u32(data, 84, len(abstract_name), byte_order)
+    fixed(data, 88, 107, abstract_name.ljust(107, b"Z"))
     out[f"09-abstract-unix-denial-{suffix}.bin"] = bytes(data)
 
     data = record(10, 0xAA0000000000000A, byte_order)
