@@ -82,14 +82,14 @@ fn canonical_identifiers_have_public_display_contracts() {
 #[test]
 fn enforcement_accessors_expose_events() {
     let id = DomainId::new(0x1_0000_0001).unwrap();
-    let event = EnforceDomainEvent::new(
-        KernelTimestamp::from_nanoseconds(9),
-        id,
-        10,
-        true,
-        false,
-        true,
-    );
+    let event = EnforceDomainEvent::builder()
+        .timestamp(KernelTimestamp::from_nanoseconds(9))
+        .domain_id(id)
+        .enforcing_tid(10)
+        .complete(true)
+        .process_wide(false)
+        .no_new_privs(true)
+        .build();
     let mut state = State::new();
     state.apply(&Event::EnforceDomain(event.clone()));
 

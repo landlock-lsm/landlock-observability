@@ -904,24 +904,30 @@ mod tests {
     };
 
     fn denial(domain_offset: u64, count: u64, timestamp: u64, inode: u64) -> Event {
-        Event::DenyAccessFs(DenyAccessFsEvent::new(
-            KernelTimestamp::from_nanoseconds(timestamp),
-            DenialContext::new(
-                HierarchySnapshot::new(
-                    DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap(),
-                    None,
-                    1,
-                    CapturedString::new(b"x".to_vec(), false).unwrap(),
-                ),
-                count,
-                true,
-                count & 1 == 0,
-            ),
-            FilesystemAccess::from_bits(4),
-            1,
-            inode,
-            CapturedString::new(format!("/p/{inode}").into_bytes(), false).unwrap(),
-        ))
+        Event::DenyAccessFs(
+            DenyAccessFsEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(timestamp))
+                .context(
+                    DenialContext::builder()
+                        .hierarchy(
+                            HierarchySnapshot::builder()
+                                .domain_id(DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap())
+                                .parent_id(None)
+                                .creator_tgid(1)
+                                .creator_comm(CapturedString::new(b"x".to_vec(), false).unwrap())
+                                .build(),
+                        )
+                        .cumulative_denial_count(count)
+                        .same_exec(true)
+                        .logged(count & 1 == 0)
+                        .build(),
+                )
+                .blockers(FilesystemAccess::from_bits(4))
+                .device(1)
+                .inode(inode)
+                .pathname(CapturedString::new(format!("/p/{inode}").into_bytes(), false).unwrap())
+                .build(),
+        )
     }
 
     #[test]
@@ -935,14 +941,16 @@ mod tests {
     fn missing_no_new_privs_has_precise_status_and_detail_warning() {
         let mut model = ObservationModel::new();
         let id = DomainId::new(MIN_LANDLOCK_ID + 7).unwrap();
-        model.observe(&Event::EnforceDomain(EnforceDomainEvent::new(
-            KernelTimestamp::from_nanoseconds(1),
-            id,
-            10,
-            true,
-            true,
-            false,
-        )));
+        model.observe(&Event::EnforceDomain(
+            EnforceDomainEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(1))
+                .domain_id(id)
+                .enforcing_tid(10)
+                .complete(true)
+                .process_wide(true)
+                .no_new_privs(false)
+                .build(),
+        ));
 
         let rows = domain_rows(&model, None);
         assert!(rows[0]
@@ -961,11 +969,13 @@ mod tests {
         assert!(!detail.contains("capability"));
         assert!(!detail.contains("escape"));
 
-        model.observe(&Event::FreeDomain(FreeDomainEvent::new(
-            KernelTimestamp::from_nanoseconds(2),
-            id,
-            0,
-        )));
+        model.observe(&Event::FreeDomain(
+            FreeDomainEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(2))
+                .domain_id(id)
+                .denial_count(0)
+                .build(),
+        ));
         assert!(!domain_rows(&model, None)[0].text.contains("WARNING"));
         assert!(!status_line(&app, &model).contains("missing no_new_privs means"));
         let detail = detail_lines(&app, &model, 120)
@@ -1012,23 +1022,31 @@ mod tests {
     fn denial_details_keep_access_family_prefix() {
         let events = [
             denial(1, 1, 1, 1),
-            Event::DenyAccessNet(DenyAccessNetEvent::new(
-                KernelTimestamp::from_nanoseconds(1),
-                DenialContext::new(
-                    HierarchySnapshot::new(
-                        DomainId::new(MIN_LANDLOCK_ID + 1).unwrap(),
-                        None,
-                        1,
-                        CapturedString::new(b"x".to_vec(), false).unwrap(),
-                    ),
-                    1,
-                    true,
-                    false,
-                ),
-                NetworkAccess::from_bits(1 << 1),
-                0,
-                443,
-            )),
+            Event::DenyAccessNet(
+                DenyAccessNetEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(1))
+                    .context(
+                        DenialContext::builder()
+                            .hierarchy(
+                                HierarchySnapshot::builder()
+                                    .domain_id(DomainId::new(MIN_LANDLOCK_ID + 1).unwrap())
+                                    .parent_id(None)
+                                    .creator_tgid(1)
+                                    .creator_comm(
+                                        CapturedString::new(b"x".to_vec(), false).unwrap(),
+                                    )
+                                    .build(),
+                            )
+                            .cumulative_denial_count(1)
+                            .same_exec(true)
+                            .logged(false)
+                            .build(),
+                    )
+                    .blockers(NetworkAccess::from_bits(1 << 1))
+                    .source_port(0)
+                    .destination_port(443)
+                    .build(),
+            ),
         ];
 
         for (event, expected) in events
@@ -1065,30 +1083,36 @@ mod tests {
         let id = RulesetId::new(MIN_LANDLOCK_ID + 7).unwrap();
         let mut model = ObservationModel::new();
         for event in [
-            Event::CreateRuleset(CreateRulesetEvent::new(
-                KernelTimestamp::from_nanoseconds(1),
-                id,
-                0,
-                FilesystemAccess::from_bits(1 << 2),
-                NetworkAccess::from_bits(1 << 1),
-                ScopeAccess::from_bits(1 << 1),
-            )),
-            Event::AddRuleFs(AddRuleFsEvent::new(
-                KernelTimestamp::from_nanoseconds(2),
-                id,
-                1,
-                FilesystemAccess::from_bits(1 << 1),
-                1,
-                2,
-                CapturedString::new(b"/tmp/file".to_vec(), false).unwrap(),
-            )),
-            Event::AddRuleNet(AddRuleNetEvent::new(
-                KernelTimestamp::from_nanoseconds(3),
-                id,
-                2,
-                NetworkAccess::from_bits(1 << 1),
-                443,
-            )),
+            Event::CreateRuleset(
+                CreateRulesetEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(1))
+                    .ruleset_id(id)
+                    .ruleset_version(0)
+                    .handled_fs(FilesystemAccess::from_bits(1 << 2))
+                    .handled_net(NetworkAccess::from_bits(1 << 1))
+                    .scoped(ScopeAccess::from_bits(1 << 1))
+                    .build(),
+            ),
+            Event::AddRuleFs(
+                AddRuleFsEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(2))
+                    .ruleset_id(id)
+                    .ruleset_version(1)
+                    .access_rights(FilesystemAccess::from_bits(1 << 1))
+                    .device(1)
+                    .inode(2)
+                    .pathname(CapturedString::new(b"/tmp/file".to_vec(), false).unwrap())
+                    .build(),
+            ),
+            Event::AddRuleNet(
+                AddRuleNetEvent::builder()
+                    .timestamp(KernelTimestamp::from_nanoseconds(3))
+                    .ruleset_id(id)
+                    .ruleset_version(2)
+                    .access_rights(NetworkAccess::from_bits(1 << 1))
+                    .port(443)
+                    .build(),
+            ),
         ] {
             model.observe(&event);
         }

@@ -218,11 +218,13 @@ mod tests {
 
         let mut events = (0..=MAX_READY_EVENTS_PER_CYCLE)
             .map(|timestamp| {
-                Event::Unknown(UnknownEvent::new(
-                    KernelTimestamp::from_nanoseconds(timestamp as u64),
-                    255,
-                    344,
-                ))
+                Event::Unknown(
+                    UnknownEvent::builder()
+                        .timestamp(KernelTimestamp::from_nanoseconds(timestamp as u64))
+                        .numeric_kind(255)
+                        .record_length(344)
+                        .build(),
+                )
             })
             .collect::<VecDeque<_>>();
         let mut app = App::new();

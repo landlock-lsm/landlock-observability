@@ -731,16 +731,21 @@ mod tests {
         creator_tgid: u32,
         creator_comm: &[u8],
     ) -> HierarchySnapshot {
-        HierarchySnapshot::new(
-            DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap(),
-            parent_offset.map(|offset| DomainId::new(MIN_LANDLOCK_ID + offset).unwrap()),
-            creator_tgid,
-            string(creator_comm),
-        )
+        HierarchySnapshot::builder()
+            .domain_id(DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap())
+            .parent_id(parent_offset.map(|offset| DomainId::new(MIN_LANDLOCK_ID + offset).unwrap()))
+            .creator_tgid(creator_tgid)
+            .creator_comm(string(creator_comm))
+            .build()
     }
 
     fn context(hierarchy: HierarchySnapshot, count: u64) -> DenialContext {
-        DenialContext::new(hierarchy, count, false, true)
+        DenialContext::builder()
+            .hierarchy(hierarchy)
+            .cumulative_denial_count(count)
+            .same_exec(false)
+            .logged(true)
+            .build()
     }
 
     fn apply(state: &mut State, event: Event) {
@@ -752,14 +757,16 @@ mod tests {
         let mut state = State::new();
         apply(
             &mut state,
-            Event::CreateRuleset(CreateRulesetEvent::new(
-                timestamp(10),
-                RulesetId::new(MIN_LANDLOCK_ID + 7).unwrap(),
-                0,
-                FilesystemAccess::from_bits(0x8000_0001),
-                NetworkAccess::from_bits(0x8000_0002),
-                ScopeAccess::from_bits(0x8000_0001),
-            )),
+            Event::CreateRuleset(
+                CreateRulesetEvent::builder()
+                    .timestamp(timestamp(10))
+                    .ruleset_id(RulesetId::new(MIN_LANDLOCK_ID + 7).unwrap())
+                    .ruleset_version(0)
+                    .handled_fs(FilesystemAccess::from_bits(0x8000_0001))
+                    .handled_net(NetworkAccess::from_bits(0x8000_0002))
+                    .scoped(ScopeAccess::from_bits(0x8000_0001))
+                    .build(),
+            ),
         );
 
         let ruleset = state
@@ -793,61 +800,75 @@ mod tests {
         let mut state = State::new();
         let id = RulesetId::new(MIN_LANDLOCK_ID + 8).unwrap();
         for event in [
-            Event::AddRuleFs(AddRuleFsEvent::new(
-                timestamp(20),
-                id,
-                5,
-                FilesystemAccess::from_bits(0x8000_0001),
-                3,
-                4,
-                string(b"new"),
-            )),
-            Event::AddRuleFs(AddRuleFsEvent::new(
-                timestamp(10),
-                id,
-                2,
-                FilesystemAccess::from_bits(0x4000_0002),
-                3,
-                4,
-                string(b"old"),
-            )),
-            Event::AddRuleFs(AddRuleFsEvent::new(
-                timestamp(30),
-                id,
-                4,
-                FilesystemAccess::from_bits(4),
-                3,
-                5,
-                string(b"separate"),
-            )),
-            Event::AddRuleNet(AddRuleNetEvent::new(
-                timestamp(40),
-                id,
-                8,
-                NetworkAccess::from_bits(0x8000_0001),
-                80,
-            )),
-            Event::AddRuleNet(AddRuleNetEvent::new(
-                timestamp(35),
-                id,
-                7,
-                NetworkAccess::from_bits(0x4000_0002),
-                80,
-            )),
-            Event::AddRuleNet(AddRuleNetEvent::new(
-                timestamp(45),
-                id,
-                6,
-                NetworkAccess::from_bits(4),
-                81,
-            )),
-            Event::AddRuleNet(AddRuleNetEvent::new(
-                timestamp(50),
-                RulesetId::new(MIN_LANDLOCK_ID + 9).unwrap(),
-                0,
-                NetworkAccess::from_bits(8),
-                90,
-            )),
+            Event::AddRuleFs(
+                AddRuleFsEvent::builder()
+                    .timestamp(timestamp(20))
+                    .ruleset_id(id)
+                    .ruleset_version(5)
+                    .access_rights(FilesystemAccess::from_bits(0x8000_0001))
+                    .device(3)
+                    .inode(4)
+                    .pathname(string(b"new"))
+                    .build(),
+            ),
+            Event::AddRuleFs(
+                AddRuleFsEvent::builder()
+                    .timestamp(timestamp(10))
+                    .ruleset_id(id)
+                    .ruleset_version(2)
+                    .access_rights(FilesystemAccess::from_bits(0x4000_0002))
+                    .device(3)
+                    .inode(4)
+                    .pathname(string(b"old"))
+                    .build(),
+            ),
+            Event::AddRuleFs(
+                AddRuleFsEvent::builder()
+                    .timestamp(timestamp(30))
+                    .ruleset_id(id)
+                    .ruleset_version(4)
+                    .access_rights(FilesystemAccess::from_bits(4))
+                    .device(3)
+                    .inode(5)
+                    .pathname(string(b"separate"))
+                    .build(),
+            ),
+            Event::AddRuleNet(
+                AddRuleNetEvent::builder()
+                    .timestamp(timestamp(40))
+                    .ruleset_id(id)
+                    .ruleset_version(8)
+                    .access_rights(NetworkAccess::from_bits(0x8000_0001))
+                    .port(80)
+                    .build(),
+            ),
+            Event::AddRuleNet(
+                AddRuleNetEvent::builder()
+                    .timestamp(timestamp(35))
+                    .ruleset_id(id)
+                    .ruleset_version(7)
+                    .access_rights(NetworkAccess::from_bits(0x4000_0002))
+                    .port(80)
+                    .build(),
+            ),
+            Event::AddRuleNet(
+                AddRuleNetEvent::builder()
+                    .timestamp(timestamp(45))
+                    .ruleset_id(id)
+                    .ruleset_version(6)
+                    .access_rights(NetworkAccess::from_bits(4))
+                    .port(81)
+                    .build(),
+            ),
+            Event::AddRuleNet(
+                AddRuleNetEvent::builder()
+                    .timestamp(timestamp(50))
+                    .ruleset_id(RulesetId::new(MIN_LANDLOCK_ID + 9).unwrap())
+                    .ruleset_version(0)
+                    .access_rights(NetworkAccess::from_bits(8))
+                    .port(90)
+                    .build(),
+            ),
         ] {
             apply(&mut state, event);
         }
@@ -897,26 +918,30 @@ mod tests {
         let mut state = State::new();
         apply(
             &mut state,
-            Event::CreateDomain(CreateDomainEvent::new(
-                timestamp(10),
-                RulesetId::new(MIN_LANDLOCK_ID + 2).unwrap(),
-                3,
-                DomainId::new(MIN_LANDLOCK_ID + 4).unwrap(),
-                None,
-                100,
-                string(b"creator"),
-            )),
+            Event::CreateDomain(
+                CreateDomainEvent::builder()
+                    .timestamp(timestamp(10))
+                    .ruleset_id(RulesetId::new(MIN_LANDLOCK_ID + 2).unwrap())
+                    .ruleset_version(3)
+                    .domain_id(DomainId::new(MIN_LANDLOCK_ID + 4).unwrap())
+                    .parent_id(None)
+                    .creator_tgid(100)
+                    .creator_comm(string(b"creator"))
+                    .build(),
+            ),
         );
         apply(
             &mut state,
-            Event::EnforceDomain(EnforceDomainEvent::new(
-                timestamp(11),
-                DomainId::new(MIN_LANDLOCK_ID + 5).unwrap(),
-                101,
-                false,
-                false,
-                true,
-            )),
+            Event::EnforceDomain(
+                EnforceDomainEvent::builder()
+                    .timestamp(timestamp(11))
+                    .domain_id(DomainId::new(MIN_LANDLOCK_ID + 5).unwrap())
+                    .enforcing_tid(101)
+                    .complete(false)
+                    .process_wide(false)
+                    .no_new_privs(true)
+                    .build(),
+            ),
         );
 
         let root = state
@@ -955,15 +980,17 @@ mod tests {
         let domain_id = DomainId::new(MIN_LANDLOCK_ID + 8).unwrap();
         apply(
             &mut state,
-            Event::CreateDomain(CreateDomainEvent::new(
-                timestamp(20),
-                ruleset_id,
-                9,
-                domain_id,
-                Some(parent_id),
-                100,
-                string(b"creator"),
-            )),
+            Event::CreateDomain(
+                CreateDomainEvent::builder()
+                    .timestamp(timestamp(20))
+                    .ruleset_id(ruleset_id)
+                    .ruleset_version(9)
+                    .domain_id(domain_id)
+                    .parent_id(Some(parent_id))
+                    .creator_tgid(100)
+                    .creator_comm(string(b"creator"))
+                    .build(),
+            ),
         );
 
         let domain = state.domain(domain_id).unwrap();
@@ -998,23 +1025,37 @@ mod tests {
         let domain_id = DomainId::new(MIN_LANDLOCK_ID + 12).unwrap();
         apply(
             &mut state,
-            Event::FreeDomain(FreeDomainEvent::new(timestamp(20), parent_id, 4)),
+            Event::FreeDomain(
+                FreeDomainEvent::builder()
+                    .timestamp(timestamp(20))
+                    .domain_id(parent_id)
+                    .denial_count(4)
+                    .build(),
+            ),
         );
         apply(
             &mut state,
-            Event::FreeRuleset(FreeRulesetEvent::new(timestamp(21), ruleset_id, 5)),
+            Event::FreeRuleset(
+                FreeRulesetEvent::builder()
+                    .timestamp(timestamp(21))
+                    .ruleset_id(ruleset_id)
+                    .ruleset_version(5)
+                    .build(),
+            ),
         );
         apply(
             &mut state,
-            Event::CreateDomain(CreateDomainEvent::new(
-                timestamp(22),
-                ruleset_id,
-                7,
-                domain_id,
-                Some(parent_id),
-                100,
-                string(b"creator"),
-            )),
+            Event::CreateDomain(
+                CreateDomainEvent::builder()
+                    .timestamp(timestamp(22))
+                    .ruleset_id(ruleset_id)
+                    .ruleset_version(7)
+                    .domain_id(domain_id)
+                    .parent_id(Some(parent_id))
+                    .creator_tgid(100)
+                    .creator_comm(string(b"creator"))
+                    .build(),
+            ),
         );
 
         let domain = state.domain(domain_id).unwrap();
@@ -1042,14 +1083,16 @@ mod tests {
         for snapshot in [hierarchy(9, None, 100, b""), hierarchy(9, None, 0, b"comm")] {
             apply(
                 &mut state,
-                Event::DenyAccessFs(DenyAccessFsEvent::new(
-                    timestamp(1),
-                    context(snapshot, 1),
-                    FilesystemAccess::from_bits(1),
-                    1,
-                    2,
-                    string(b"path"),
-                )),
+                Event::DenyAccessFs(
+                    DenyAccessFsEvent::builder()
+                        .timestamp(timestamp(1))
+                        .context(context(snapshot, 1))
+                        .blockers(FilesystemAccess::from_bits(1))
+                        .device(1)
+                        .inode(2)
+                        .pathname(string(b"path"))
+                        .build(),
+                ),
             );
             let domain = state.domain(id).unwrap();
             assert_eq!(domain.creator_tgid(), None);
@@ -1058,14 +1101,16 @@ mod tests {
 
         apply(
             &mut state,
-            Event::DenyAccessFs(DenyAccessFsEvent::new(
-                timestamp(2),
-                context(hierarchy(9, None, 200, b"paired"), 2),
-                FilesystemAccess::from_bits(1),
-                1,
-                2,
-                string(b"path"),
-            )),
+            Event::DenyAccessFs(
+                DenyAccessFsEvent::builder()
+                    .timestamp(timestamp(2))
+                    .context(context(hierarchy(9, None, 200, b"paired"), 2))
+                    .blockers(FilesystemAccess::from_bits(1))
+                    .device(1)
+                    .inode(2)
+                    .pathname(string(b"path"))
+                    .build(),
+            ),
         );
         let domain = state.domain(id).unwrap();
         assert_eq!(domain.creator_tgid(), Some(200));
@@ -1076,55 +1121,67 @@ mod tests {
     fn every_denial_family_uses_common_late_start_inference_without_double_counting() {
         let mut state = State::new();
         let events = [
-            Event::DenyAccessFs(DenyAccessFsEvent::new(
-                timestamp(1),
-                context(hierarchy(10, Some(20), 0, b""), 7),
-                FilesystemAccess::from_bits(1),
-                1,
-                2,
-                string(b"path"),
-            )),
-            Event::DenyAccessNet(DenyAccessNetEvent::new(
-                timestamp(2),
-                context(hierarchy(11, None, 111, b"net"), 8),
-                NetworkAccess::from_bits(1),
-                10,
-                20,
-            )),
-            Event::DenyPtrace(DenyPtraceEvent::new(
-                timestamp(3),
-                context(hierarchy(12, None, 112, b"ptrace"), 9),
-                DomainMembership::Unsandboxed,
-                1,
-                string(b"target"),
-            )),
-            Event::DenyScopeSignal(DenyScopeSignalEvent::new(
-                timestamp(4),
-                context(hierarchy(13, None, 113, b"signal"), 10),
-                DomainMembership::Unsandboxed,
-                1,
-                string(b"target"),
-            )),
-            Event::DenyScopeAbstractUnixSocket(DenyScopeAbstractUnixSocketEvent::new(
-                timestamp(5),
-                context(hierarchy(14, None, 114, b"unix"), 11),
-                DomainMembership::Unsandboxed,
-                1,
-            )),
+            Event::DenyAccessFs(
+                DenyAccessFsEvent::builder()
+                    .timestamp(timestamp(1))
+                    .context(context(hierarchy(10, Some(20), 0, b""), 7))
+                    .blockers(FilesystemAccess::from_bits(1))
+                    .device(1)
+                    .inode(2)
+                    .pathname(string(b"path"))
+                    .build(),
+            ),
+            Event::DenyAccessNet(
+                DenyAccessNetEvent::builder()
+                    .timestamp(timestamp(2))
+                    .context(context(hierarchy(11, None, 111, b"net"), 8))
+                    .blockers(NetworkAccess::from_bits(1))
+                    .source_port(10)
+                    .destination_port(20)
+                    .build(),
+            ),
+            Event::DenyPtrace(
+                DenyPtraceEvent::builder()
+                    .timestamp(timestamp(3))
+                    .context(context(hierarchy(12, None, 112, b"ptrace"), 9))
+                    .tracee_domain(DomainMembership::Unsandboxed)
+                    .tracee_pid(1)
+                    .tracee_comm(string(b"target"))
+                    .build(),
+            ),
+            Event::DenyScopeSignal(
+                DenyScopeSignalEvent::builder()
+                    .timestamp(timestamp(4))
+                    .context(context(hierarchy(13, None, 113, b"signal"), 10))
+                    .target_domain(DomainMembership::Unsandboxed)
+                    .target_pid(1)
+                    .target_comm(string(b"target"))
+                    .build(),
+            ),
+            Event::DenyScopeAbstractUnixSocket(
+                DenyScopeAbstractUnixSocketEvent::builder()
+                    .timestamp(timestamp(5))
+                    .context(context(hierarchy(14, None, 114, b"unix"), 11))
+                    .peer_domain(DomainMembership::Unsandboxed)
+                    .peer_pid(1)
+                    .build(),
+            ),
         ];
         for event in events {
             apply(&mut state, event);
         }
         apply(
             &mut state,
-            Event::DenyAccessFs(DenyAccessFsEvent::new(
-                timestamp(6),
-                context(hierarchy(10, Some(20), 0, b""), 7),
-                FilesystemAccess::from_bits(1),
-                1,
-                2,
-                string(b"path"),
-            )),
+            Event::DenyAccessFs(
+                DenyAccessFsEvent::builder()
+                    .timestamp(timestamp(6))
+                    .context(context(hierarchy(10, Some(20), 0, b""), 7))
+                    .blockers(FilesystemAccess::from_bits(1))
+                    .device(1)
+                    .inode(2)
+                    .pathname(string(b"path"))
+                    .build(),
+            ),
         );
 
         let denying = state
@@ -1163,30 +1220,40 @@ mod tests {
         let id = DomainId::new(MIN_LANDLOCK_ID + 30).unwrap();
         apply(
             &mut state,
-            Event::DenyAccessFs(DenyAccessFsEvent::new(
-                timestamp(30),
-                context(hierarchy(30, Some(31), 300, b"inferred"), 50),
-                FilesystemAccess::from_bits(1),
-                1,
-                2,
-                string(b"path"),
-            )),
+            Event::DenyAccessFs(
+                DenyAccessFsEvent::builder()
+                    .timestamp(timestamp(30))
+                    .context(context(hierarchy(30, Some(31), 300, b"inferred"), 50))
+                    .blockers(FilesystemAccess::from_bits(1))
+                    .device(1)
+                    .inode(2)
+                    .pathname(string(b"path"))
+                    .build(),
+            ),
         );
         apply(
             &mut state,
-            Event::FreeDomain(FreeDomainEvent::new(timestamp(40), id, 45)),
+            Event::FreeDomain(
+                FreeDomainEvent::builder()
+                    .timestamp(timestamp(40))
+                    .domain_id(id)
+                    .denial_count(45)
+                    .build(),
+            ),
         );
         apply(
             &mut state,
-            Event::CreateDomain(CreateDomainEvent::new(
-                timestamp(10),
-                RulesetId::new(MIN_LANDLOCK_ID + 6).unwrap(),
-                7,
-                id,
-                None,
-                301,
-                string(b"explicit"),
-            )),
+            Event::CreateDomain(
+                CreateDomainEvent::builder()
+                    .timestamp(timestamp(10))
+                    .ruleset_id(RulesetId::new(MIN_LANDLOCK_ID + 6).unwrap())
+                    .ruleset_version(7)
+                    .domain_id(id)
+                    .parent_id(None)
+                    .creator_tgid(301)
+                    .creator_comm(string(b"explicit"))
+                    .build(),
+            ),
         );
 
         let domain = state.domain(id).unwrap();
@@ -1211,35 +1278,75 @@ mod tests {
         let domain_id = DomainId::new(MIN_LANDLOCK_ID + 40).unwrap();
         let ruleset_id = RulesetId::new(MIN_LANDLOCK_ID + 41).unwrap();
         for event in [
-            Event::FreeDomain(FreeDomainEvent::new(timestamp(30), domain_id, 9)),
-            Event::FreeDomain(FreeDomainEvent::new(timestamp(20), domain_id, 7)),
-            Event::FreeDomain(FreeDomainEvent::new(timestamp(40), domain_id, 11)),
-            Event::FreeRuleset(FreeRulesetEvent::new(timestamp(30), ruleset_id, 9)),
-            Event::FreeRuleset(FreeRulesetEvent::new(timestamp(20), ruleset_id, 7)),
-            Event::FreeRuleset(FreeRulesetEvent::new(timestamp(40), ruleset_id, 11)),
+            Event::FreeDomain(
+                FreeDomainEvent::builder()
+                    .timestamp(timestamp(30))
+                    .domain_id(domain_id)
+                    .denial_count(9)
+                    .build(),
+            ),
+            Event::FreeDomain(
+                FreeDomainEvent::builder()
+                    .timestamp(timestamp(20))
+                    .domain_id(domain_id)
+                    .denial_count(7)
+                    .build(),
+            ),
+            Event::FreeDomain(
+                FreeDomainEvent::builder()
+                    .timestamp(timestamp(40))
+                    .domain_id(domain_id)
+                    .denial_count(11)
+                    .build(),
+            ),
+            Event::FreeRuleset(
+                FreeRulesetEvent::builder()
+                    .timestamp(timestamp(30))
+                    .ruleset_id(ruleset_id)
+                    .ruleset_version(9)
+                    .build(),
+            ),
+            Event::FreeRuleset(
+                FreeRulesetEvent::builder()
+                    .timestamp(timestamp(20))
+                    .ruleset_id(ruleset_id)
+                    .ruleset_version(7)
+                    .build(),
+            ),
+            Event::FreeRuleset(
+                FreeRulesetEvent::builder()
+                    .timestamp(timestamp(40))
+                    .ruleset_id(ruleset_id)
+                    .ruleset_version(11)
+                    .build(),
+            ),
         ] {
             apply(&mut state, event);
         }
         apply(
             &mut state,
-            Event::EnforceDomain(EnforceDomainEvent::new(
-                timestamp(50),
-                domain_id,
-                1,
-                true,
-                true,
-                true,
-            )),
+            Event::EnforceDomain(
+                EnforceDomainEvent::builder()
+                    .timestamp(timestamp(50))
+                    .domain_id(domain_id)
+                    .enforcing_tid(1)
+                    .complete(true)
+                    .process_wide(true)
+                    .no_new_privs(true)
+                    .build(),
+            ),
         );
         apply(
             &mut state,
-            Event::AddRuleNet(AddRuleNetEvent::new(
-                timestamp(50),
-                ruleset_id,
-                12,
-                NetworkAccess::from_bits(1),
-                80,
-            )),
+            Event::AddRuleNet(
+                AddRuleNetEvent::builder()
+                    .timestamp(timestamp(50))
+                    .ruleset_id(ruleset_id)
+                    .ruleset_version(12)
+                    .access_rights(NetworkAccess::from_bits(1))
+                    .port(80)
+                    .build(),
+            ),
         );
 
         let domain = state.domain(domain_id).unwrap();
@@ -1260,38 +1367,46 @@ mod tests {
         let id = DomainId::new(MIN_LANDLOCK_ID + 50).unwrap();
         assert!(state.domain(id).is_none());
         for event in [
-            Event::EnforceDomain(EnforceDomainEvent::new(
-                timestamp(20),
-                id,
-                100,
-                true,
-                true,
-                true,
-            )),
-            Event::EnforceDomain(EnforceDomainEvent::new(
-                timestamp(10),
-                id,
-                100,
-                false,
-                false,
-                false,
-            )),
-            Event::EnforceDomain(EnforceDomainEvent::new(
-                timestamp(25),
-                id,
-                100,
-                false,
-                false,
-                false,
-            )),
-            Event::EnforceDomain(EnforceDomainEvent::new(
-                timestamp(10),
-                id,
-                100,
-                true,
-                false,
-                true,
-            )),
+            Event::EnforceDomain(
+                EnforceDomainEvent::builder()
+                    .timestamp(timestamp(20))
+                    .domain_id(id)
+                    .enforcing_tid(100)
+                    .complete(true)
+                    .process_wide(true)
+                    .no_new_privs(true)
+                    .build(),
+            ),
+            Event::EnforceDomain(
+                EnforceDomainEvent::builder()
+                    .timestamp(timestamp(10))
+                    .domain_id(id)
+                    .enforcing_tid(100)
+                    .complete(false)
+                    .process_wide(false)
+                    .no_new_privs(false)
+                    .build(),
+            ),
+            Event::EnforceDomain(
+                EnforceDomainEvent::builder()
+                    .timestamp(timestamp(25))
+                    .domain_id(id)
+                    .enforcing_tid(100)
+                    .complete(false)
+                    .process_wide(false)
+                    .no_new_privs(false)
+                    .build(),
+            ),
+            Event::EnforceDomain(
+                EnforceDomainEvent::builder()
+                    .timestamp(timestamp(10))
+                    .domain_id(id)
+                    .enforcing_tid(100)
+                    .complete(true)
+                    .process_wide(false)
+                    .no_new_privs(true)
+                    .build(),
+            ),
         ] {
             apply(&mut state, event);
         }
@@ -1301,23 +1416,33 @@ mod tests {
         assert!(state.domain(id).unwrap().any_process_wide_enforcement());
 
         for event in [
-            Event::EnforceDomain(EnforceDomainEvent::new(
-                timestamp(25),
-                id,
-                100,
-                true,
-                false,
-                false,
-            )),
-            Event::EnforceDomain(EnforceDomainEvent::new(
-                timestamp(30),
-                id,
-                101,
-                false,
-                false,
-                true,
-            )),
-            Event::FreeDomain(FreeDomainEvent::new(timestamp(40), id, 0)),
+            Event::EnforceDomain(
+                EnforceDomainEvent::builder()
+                    .timestamp(timestamp(25))
+                    .domain_id(id)
+                    .enforcing_tid(100)
+                    .complete(true)
+                    .process_wide(false)
+                    .no_new_privs(false)
+                    .build(),
+            ),
+            Event::EnforceDomain(
+                EnforceDomainEvent::builder()
+                    .timestamp(timestamp(30))
+                    .domain_id(id)
+                    .enforcing_tid(101)
+                    .complete(false)
+                    .process_wide(false)
+                    .no_new_privs(true)
+                    .build(),
+            ),
+            Event::FreeDomain(
+                FreeDomainEvent::builder()
+                    .timestamp(timestamp(40))
+                    .domain_id(id)
+                    .denial_count(0)
+                    .build(),
+            ),
         ] {
             apply(&mut state, event);
         }
@@ -1345,14 +1470,16 @@ mod tests {
 
         apply(
             &mut state,
-            Event::EnforceDomain(EnforceDomainEvent::new(
-                timestamp(50),
-                id,
-                100,
-                true,
-                true,
-                true,
-            )),
+            Event::EnforceDomain(
+                EnforceDomainEvent::builder()
+                    .timestamp(timestamp(50))
+                    .domain_id(id)
+                    .enforcing_tid(100)
+                    .complete(true)
+                    .process_wide(true)
+                    .no_new_privs(true)
+                    .build(),
+            ),
         );
         let domain = state.domain(id).unwrap();
         assert_eq!(domain.lifecycle(), LifecycleState::Deallocated);
@@ -1364,23 +1491,29 @@ mod tests {
         let mut state = State::new();
         apply(
             &mut state,
-            Event::DenyPtrace(DenyPtraceEvent::new(
-                timestamp(1),
-                context(hierarchy(60, None, 1, b"one"), 1),
-                DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 61).unwrap()),
-                2,
-                string(b"two"),
-            )),
+            Event::DenyPtrace(
+                DenyPtraceEvent::builder()
+                    .timestamp(timestamp(1))
+                    .context(context(hierarchy(60, None, 1, b"one"), 1))
+                    .tracee_domain(DomainMembership::Sandboxed(
+                        DomainId::new(MIN_LANDLOCK_ID + 61).unwrap(),
+                    ))
+                    .tracee_pid(2)
+                    .tracee_comm(string(b"two"))
+                    .build(),
+            ),
         );
         apply(
             &mut state,
-            Event::DenyScopeSignal(DenyScopeSignalEvent::new(
-                timestamp(2),
-                context(hierarchy(62, None, 1, b"one"), 1),
-                DomainMembership::Unsandboxed,
-                2,
-                string(b"two"),
-            )),
+            Event::DenyScopeSignal(
+                DenyScopeSignalEvent::builder()
+                    .timestamp(timestamp(2))
+                    .context(context(hierarchy(62, None, 1, b"one"), 1))
+                    .target_domain(DomainMembership::Unsandboxed)
+                    .target_pid(2)
+                    .target_comm(string(b"two"))
+                    .build(),
+            ),
         );
 
         let other = state
@@ -1397,20 +1530,28 @@ mod tests {
         let mut state = State::new();
         apply(
             &mut state,
-            Event::Unknown(UnknownEvent::new(timestamp(1), 200, 344)),
+            Event::Unknown(
+                UnknownEvent::builder()
+                    .timestamp(timestamp(1))
+                    .numeric_kind(200)
+                    .record_length(344)
+                    .build(),
+            ),
         );
         assert_eq!(state.ruleset_count(), 0);
         assert_eq!(state.domain_count(), 0);
 
         let id = RulesetId::new(MIN_LANDLOCK_ID + 70).unwrap();
-        let create = Event::CreateRuleset(CreateRulesetEvent::new(
-            timestamp(2),
-            id,
-            1,
-            FilesystemAccess::from_bits(1),
-            NetworkAccess::from_bits(2),
-            ScopeAccess::from_bits(1),
-        ));
+        let create = Event::CreateRuleset(
+            CreateRulesetEvent::builder()
+                .timestamp(timestamp(2))
+                .ruleset_id(id)
+                .ruleset_version(1)
+                .handled_fs(FilesystemAccess::from_bits(1))
+                .handled_net(NetworkAccess::from_bits(2))
+                .scoped(ScopeAccess::from_bits(1))
+                .build(),
+        );
         apply(&mut state, create.clone());
         apply(&mut state, create);
         assert_eq!(state.ruleset_count(), 1);
@@ -1424,7 +1565,13 @@ mod tests {
         assert_eq!(ruleset.filesystem_rule_count(), 0);
         assert_eq!(ruleset.network_rule_count(), 0);
 
-        let free = Event::FreeRuleset(FreeRulesetEvent::new(timestamp(3), id, 1));
+        let free = Event::FreeRuleset(
+            FreeRulesetEvent::builder()
+                .timestamp(timestamp(3))
+                .ruleset_id(id)
+                .ruleset_version(1)
+                .build(),
+        );
         apply(&mut state, free.clone());
         apply(&mut state, free);
         assert_eq!(state.ruleset_count(), 1);

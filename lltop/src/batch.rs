@@ -464,41 +464,50 @@ mod tests {
     }
 
     fn context(domain_offset: u64, parent_offset: Option<u64>, count: u64) -> DenialContext {
-        DenialContext::new(
-            HierarchySnapshot::new(
-                DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap(),
-                parent_offset.map(|offset| DomainId::new(MIN_LANDLOCK_ID + offset).unwrap()),
-                10,
-                captured(b"creator"),
-            ),
-            count,
-            true,
-            false,
-        )
+        DenialContext::builder()
+            .hierarchy(
+                HierarchySnapshot::builder()
+                    .domain_id(DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap())
+                    .parent_id(
+                        parent_offset
+                            .map(|offset| DomainId::new(MIN_LANDLOCK_ID + offset).unwrap()),
+                    )
+                    .creator_tgid(10)
+                    .creator_comm(captured(b"creator"))
+                    .build(),
+            )
+            .cumulative_denial_count(count)
+            .same_exec(true)
+            .logged(false)
+            .build()
     }
 
     fn fs(seconds: u64, blockers: u32, path: &[u8]) -> Event {
-        Event::DenyAccessFs(DenyAccessFsEvent::new(
-            timestamp(seconds),
-            context(0x10, None, seconds),
-            FilesystemAccess::from_bits(blockers),
-            1,
-            2,
-            captured(path),
-        ))
+        Event::DenyAccessFs(
+            DenyAccessFsEvent::builder()
+                .timestamp(timestamp(seconds))
+                .context(context(0x10, None, seconds))
+                .blockers(FilesystemAccess::from_bits(blockers))
+                .device(1)
+                .inode(2)
+                .pathname(captured(path))
+                .build(),
+        )
     }
 
     #[test]
     fn lifecycle_records_are_identity_deduplicated_and_accept_late_objects() {
-        let create = Event::CreateDomain(CreateDomainEvent::new(
-            timestamp(1),
-            RulesetId::new(MIN_LANDLOCK_ID + 0x20).unwrap(),
-            3,
-            DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap(),
-            None,
-            42,
-            captured(b"shell"),
-        ));
+        let create = Event::CreateDomain(
+            CreateDomainEvent::builder()
+                .timestamp(timestamp(1))
+                .ruleset_id(RulesetId::new(MIN_LANDLOCK_ID + 0x20).unwrap())
+                .ruleset_version(3)
+                .domain_id(DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap())
+                .parent_id(None)
+                .creator_tgid(42)
+                .creator_comm(captured(b"shell"))
+                .build(),
+        );
         let mut batch = Batch::new();
         assert_eq!(
             batch.process(&create),
@@ -509,15 +518,17 @@ mod tests {
         );
         assert!(batch.process(&create).is_empty());
 
-        let late_create = Event::CreateDomain(CreateDomainEvent::new(
-            timestamp(2),
-            RulesetId::new(MIN_LANDLOCK_ID + 0x30).unwrap(),
-            4,
-            DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap(),
-            Some(DomainId::new(MIN_LANDLOCK_ID + 0x11).unwrap()),
-            43,
-            captured(b"upgraded"),
-        ));
+        let late_create = Event::CreateDomain(
+            CreateDomainEvent::builder()
+                .timestamp(timestamp(2))
+                .ruleset_id(RulesetId::new(MIN_LANDLOCK_ID + 0x30).unwrap())
+                .ruleset_version(4)
+                .domain_id(DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap())
+                .parent_id(Some(DomainId::new(MIN_LANDLOCK_ID + 0x11).unwrap()))
+                .creator_tgid(43)
+                .creator_comm(captured(b"upgraded"))
+                .build(),
+        );
         assert_eq!(
             batch.process(&late_create),
             [
@@ -528,11 +539,13 @@ mod tests {
         );
         assert!(batch.process(&late_create).is_empty());
 
-        let late_free = Event::FreeRuleset(FreeRulesetEvent::new(
-            timestamp(2),
-            RulesetId::new(MIN_LANDLOCK_ID + 0xab).unwrap(),
-            7,
-        ));
+        let late_free = Event::FreeRuleset(
+            FreeRulesetEvent::builder()
+                .timestamp(timestamp(2))
+                .ruleset_id(RulesetId::new(MIN_LANDLOCK_ID + 0xab).unwrap())
+                .ruleset_version(7)
+                .build(),
+        );
         assert_eq!(
             batch.process(&late_free),
             [
@@ -542,11 +555,13 @@ mod tests {
         );
         assert!(batch.process(&late_free).is_empty());
 
-        let late_domain = Event::FreeDomain(FreeDomainEvent::new(
-            timestamp(3),
-            DomainId::new(MIN_LANDLOCK_ID + 0xcd).unwrap(),
-            0,
-        ));
+        let late_domain = Event::FreeDomain(
+            FreeDomainEvent::builder()
+                .timestamp(timestamp(3))
+                .domain_id(DomainId::new(MIN_LANDLOCK_ID + 0xcd).unwrap())
+                .denial_count(0)
+                .build(),
+        );
         assert_eq!(
             batch.process(&late_domain),
             [
@@ -560,30 +575,36 @@ mod tests {
     fn enforcement_reports_weakest_observed_no_new_privs_fact() {
         let mut batch = Batch::new();
         let id = DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap();
-        let first = Event::EnforceDomain(EnforceDomainEvent::new(
-            timestamp(1),
-            id,
-            100,
-            false,
-            true,
-            true,
-        ));
-        let weakest = Event::EnforceDomain(EnforceDomainEvent::new(
-            timestamp(2),
-            id,
-            101,
-            true,
-            true,
-            false,
-        ));
-        let updated = Event::EnforceDomain(EnforceDomainEvent::new(
-            timestamp(3),
-            id,
-            101,
-            true,
-            true,
-            true,
-        ));
+        let first = Event::EnforceDomain(
+            EnforceDomainEvent::builder()
+                .timestamp(timestamp(1))
+                .domain_id(id)
+                .enforcing_tid(100)
+                .complete(false)
+                .process_wide(true)
+                .no_new_privs(true)
+                .build(),
+        );
+        let weakest = Event::EnforceDomain(
+            EnforceDomainEvent::builder()
+                .timestamp(timestamp(2))
+                .domain_id(id)
+                .enforcing_tid(101)
+                .complete(true)
+                .process_wide(true)
+                .no_new_privs(false)
+                .build(),
+        );
+        let updated = Event::EnforceDomain(
+            EnforceDomainEvent::builder()
+                .timestamp(timestamp(3))
+                .domain_id(id)
+                .enforcing_tid(101)
+                .complete(true)
+                .process_wide(true)
+                .no_new_privs(true)
+                .build(),
+        );
         assert_eq!(
             batch.process(&first),
             [
@@ -611,33 +632,43 @@ mod tests {
     fn all_denial_kinds_have_lines_relations_and_independent_counters() {
         let events = [
             fs(1, 4, b"/tmp/file"),
-            Event::DenyAccessNet(DenyAccessNetEvent::new(
-                timestamp(2),
-                context(0x10, None, 2),
-                NetworkAccess::from_bits(2),
-                0,
-                443,
-            )),
-            Event::DenyPtrace(DenyPtraceEvent::new(
-                timestamp(3),
-                context(0x10, None, 3),
-                DomainMembership::Unsandboxed,
-                20,
-                captured(b"tracee"),
-            )),
-            Event::DenyScopeSignal(DenyScopeSignalEvent::new(
-                timestamp(4),
-                context(0x10, None, 4),
-                DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 0x22).unwrap()),
-                21,
-                captured(b"tar:get"),
-            )),
-            Event::DenyScopeAbstractUnixSocket(DenyScopeAbstractUnixSocketEvent::new(
-                timestamp(5),
-                context(0x10, None, 5),
-                DomainMembership::Unsandboxed,
-                22,
-            )),
+            Event::DenyAccessNet(
+                DenyAccessNetEvent::builder()
+                    .timestamp(timestamp(2))
+                    .context(context(0x10, None, 2))
+                    .blockers(NetworkAccess::from_bits(2))
+                    .source_port(0)
+                    .destination_port(443)
+                    .build(),
+            ),
+            Event::DenyPtrace(
+                DenyPtraceEvent::builder()
+                    .timestamp(timestamp(3))
+                    .context(context(0x10, None, 3))
+                    .tracee_domain(DomainMembership::Unsandboxed)
+                    .tracee_pid(20)
+                    .tracee_comm(captured(b"tracee"))
+                    .build(),
+            ),
+            Event::DenyScopeSignal(
+                DenyScopeSignalEvent::builder()
+                    .timestamp(timestamp(4))
+                    .context(context(0x10, None, 4))
+                    .target_domain(DomainMembership::Sandboxed(
+                        DomainId::new(MIN_LANDLOCK_ID + 0x22).unwrap(),
+                    ))
+                    .target_pid(21)
+                    .target_comm(captured(b"tar:get"))
+                    .build(),
+            ),
+            Event::DenyScopeAbstractUnixSocket(
+                DenyScopeAbstractUnixSocketEvent::builder()
+                    .timestamp(timestamp(5))
+                    .context(context(0x10, None, 5))
+                    .peer_domain(DomainMembership::Unsandboxed)
+                    .peer_pid(22)
+                    .build(),
+            ),
         ];
         let mut batch = Batch::new();
         let output = events
@@ -667,24 +698,30 @@ mod tests {
 
     #[test]
     fn denial_flags_are_rendered_exactly() {
-        let event = Event::DenyAccessFs(DenyAccessFsEvent::new(
-            timestamp(1),
-            DenialContext::new(
-                HierarchySnapshot::new(
-                    DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap(),
-                    None,
-                    10,
-                    captured(b"creator"),
-                ),
-                1,
-                false,
-                true,
-            ),
-            FilesystemAccess::from_bits(4),
-            1,
-            2,
-            captured(b"/tmp/file"),
-        ));
+        let event = Event::DenyAccessFs(
+            DenyAccessFsEvent::builder()
+                .timestamp(timestamp(1))
+                .context(
+                    DenialContext::builder()
+                        .hierarchy(
+                            HierarchySnapshot::builder()
+                                .domain_id(DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap())
+                                .parent_id(None)
+                                .creator_tgid(10)
+                                .creator_comm(captured(b"creator"))
+                                .build(),
+                        )
+                        .cumulative_denial_count(1)
+                        .same_exec(false)
+                        .logged(true)
+                        .build(),
+                )
+                .blockers(FilesystemAccess::from_bits(4))
+                .device(1)
+                .inode(2)
+                .pathname(captured(b"/tmp/file"))
+                .build(),
+        );
 
         assert_eq!(
             Batch::new().process(&event)[1],
@@ -698,13 +735,15 @@ mod tests {
         let output = batch.process(&fs(1, 0x8000_0004, b"/x"));
         assert!(output[1].contains("blockers=FS:read_file,0x80000000"));
 
-        let network = Event::DenyAccessNet(DenyAccessNetEvent::new(
-            timestamp(2),
-            context(0x10, None, 2),
-            NetworkAccess::from_bits(0x8000_0001),
-            7,
-            9,
-        ));
+        let network = Event::DenyAccessNet(
+            DenyAccessNetEvent::builder()
+                .timestamp(timestamp(2))
+                .context(context(0x10, None, 2))
+                .blockers(NetworkAccess::from_bits(0x8000_0001))
+                .source_port(7)
+                .destination_port(9)
+                .build(),
+        );
         let output = batch.process(&network);
         assert!(output[0].contains("blockers=Net:bind_tcp,0x80000000"));
     }
@@ -715,46 +754,54 @@ mod tests {
             escape(&captured(b"safe/path A=%,\\\n\x1b\xff")),
             "safe/path\\x20A\\x3d\\x25\\x2c\\x5c\\x0a\\x1b\\xff"
         );
-        let create = Event::CreateDomain(CreateDomainEvent::new(
-            timestamp(1),
-            RulesetId::new(MIN_LANDLOCK_ID + 1).unwrap(),
-            0,
-            DomainId::new(MIN_LANDLOCK_ID + 2).unwrap(),
-            None,
-            3,
-            captured(b"a b]\\\x1b"),
-        ));
+        let create = Event::CreateDomain(
+            CreateDomainEvent::builder()
+                .timestamp(timestamp(1))
+                .ruleset_id(RulesetId::new(MIN_LANDLOCK_ID + 1).unwrap())
+                .ruleset_version(0)
+                .domain_id(DomainId::new(MIN_LANDLOCK_ID + 2).unwrap())
+                .parent_id(None)
+                .creator_tgid(3)
+                .creator_comm(captured(b"a b]\\\x1b"))
+                .build(),
+        );
         assert!(Batch::new().process(&create)[0].contains("creator=a\\x20b\\x5d\\x5c\\x1b[3]"));
     }
 
     #[test]
     fn network_target_direction_comes_from_access_even_for_zero_ports() {
         let mut batch = Batch::new();
-        let bind = Event::DenyAccessNet(DenyAccessNetEvent::new(
-            timestamp(1),
-            context(1, None, 1),
-            NetworkAccess::from_bits(4),
-            0,
-            99,
-        ));
+        let bind = Event::DenyAccessNet(
+            DenyAccessNetEvent::builder()
+                .timestamp(timestamp(1))
+                .context(context(1, None, 1))
+                .blockers(NetworkAccess::from_bits(4))
+                .source_port(0)
+                .destination_port(99)
+                .build(),
+        );
         assert!(batch.process(&bind)[1].contains("target=sport:0"));
 
-        let connect = Event::DenyAccessNet(DenyAccessNetEvent::new(
-            timestamp(2),
-            context(1, None, 2),
-            NetworkAccess::from_bits(8),
-            99,
-            0,
-        ));
+        let connect = Event::DenyAccessNet(
+            DenyAccessNetEvent::builder()
+                .timestamp(timestamp(2))
+                .context(context(1, None, 2))
+                .blockers(NetworkAccess::from_bits(8))
+                .source_port(99)
+                .destination_port(0)
+                .build(),
+        );
         assert!(batch.process(&connect)[0].contains("target=dport:0"));
 
-        let unknown = Event::DenyAccessNet(DenyAccessNetEvent::new(
-            timestamp(3),
-            context(1, None, 3),
-            NetworkAccess::from_bits(0x8000_0000),
-            7,
-            8,
-        ));
+        let unknown = Event::DenyAccessNet(
+            DenyAccessNetEvent::builder()
+                .timestamp(timestamp(3))
+                .context(context(1, None, 3))
+                .blockers(NetworkAccess::from_bits(0x8000_0000))
+                .source_port(7)
+                .destination_port(8)
+                .build(),
+        );
         assert!(batch.process(&unknown)[0].contains("target=sport:7,dport:8"));
     }
 
@@ -777,16 +824,26 @@ mod tests {
     fn irrelevant_events_are_silent_and_stats_use_reconstructed_lifecycle() {
         let mut batch = Batch::new();
         assert!(batch
-            .process(&Event::Unknown(UnknownEvent::new(timestamp(1), 99, 16)))
+            .process(&Event::Unknown(
+                UnknownEvent::builder()
+                    .timestamp(timestamp(1))
+                    .numeric_kind(99)
+                    .record_length(16)
+                    .build()
+            ))
             .is_empty());
 
-        let relational = Event::DenyScopeSignal(DenyScopeSignalEvent::new(
-            timestamp(2),
-            context(1, None, 1),
-            DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 2).unwrap()),
-            3,
-            captured(b"target"),
-        ));
+        let relational = Event::DenyScopeSignal(
+            DenyScopeSignalEvent::builder()
+                .timestamp(timestamp(2))
+                .context(context(1, None, 1))
+                .target_domain(DomainMembership::Sandboxed(
+                    DomainId::new(MIN_LANDLOCK_ID + 2).unwrap(),
+                ))
+                .target_pid(3)
+                .target_comm(captured(b"target"))
+                .build(),
+        );
         let output = batch.process(&relational);
         assert_eq!(
             output,
@@ -798,11 +855,13 @@ mod tests {
             ]
         );
 
-        let deallocated = batch.process(&Event::FreeDomain(FreeDomainEvent::new(
-            timestamp(3),
-            DomainId::new(MIN_LANDLOCK_ID + 1).unwrap(),
-            1,
-        )));
+        let deallocated = batch.process(&Event::FreeDomain(
+            FreeDomainEvent::builder()
+                .timestamp(timestamp(3))
+                .domain_id(DomainId::new(MIN_LANDLOCK_ID + 1).unwrap())
+                .denial_count(1)
+                .build(),
+        ));
         assert_eq!(
             deallocated,
             ["STATS domains=0/2 denials=1 (fs=0 net=0 ptrace=0 signal=1 abstract_unix=0)"]
