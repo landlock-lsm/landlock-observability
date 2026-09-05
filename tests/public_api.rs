@@ -4,9 +4,10 @@ use landlock_observability::collector::{
     CollectorReceiveErrorKind, ReceiveTimeoutError, TryReceiveError,
 };
 use landlock_observability::event::{
-    DomainId, DomainMembership, EnforceDomainEvent, Event, KernelTimestamp,
+    DomainId, DomainMembership, EnforceDomainEvent, Event, KernelTimestamp, RulesetId,
+    MIN_LANDLOCK_ID,
 };
-use landlock_observability::state::{DomainParent, LifecycleState, State};
+use landlock_observability::state::{DomainParent, LifecycleState, RulesetVersion, State};
 
 // These matches intentionally have no wildcard: the value domains are closed.
 fn domain_parent_id(parent: DomainParent) -> Option<DomainId> {
@@ -55,7 +56,7 @@ fn collector_receive_variants_expose_their_errors() {
 
 #[test]
 fn public_state_enums_are_exhaustive() {
-    let id = DomainId::new(0x1_0000_0000);
+    let id = DomainId::new(0x1_0000_0000).unwrap();
     assert_eq!(domain_parent_id(DomainParent::Root), None);
     assert_eq!(domain_parent_id(DomainParent::Domain(id)), Some(id));
     assert_eq!(membership_id(DomainMembership::Unsandboxed), None);
@@ -66,8 +67,21 @@ fn public_state_enums_are_exhaustive() {
 }
 
 #[test]
+fn canonical_identifiers_have_public_display_contracts() {
+    let domain = DomainId::new(MIN_LANDLOCK_ID).unwrap();
+    assert_eq!(domain.to_string(), "100000000");
+    assert_eq!(format!("{domain:#020}"), "100000000");
+    assert_eq!(format!("{domain:*>20}"), "100000000");
+
+    let ruleset = RulesetVersion::new(RulesetId::new(MIN_LANDLOCK_ID).unwrap(), 7);
+    assert_eq!(ruleset.to_string(), "100000000.7");
+    assert_eq!(format!("{ruleset:#020}"), "100000000.7");
+    assert_eq!(format!("{ruleset:*>20}"), "100000000.7");
+}
+
+#[test]
 fn enforcement_accessors_expose_events() {
-    let id = DomainId::new(0x1_0000_0001);
+    let id = DomainId::new(0x1_0000_0001).unwrap();
     let event = EnforceDomainEvent::new(
         KernelTimestamp::from_nanoseconds(9),
         id,

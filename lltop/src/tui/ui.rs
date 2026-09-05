@@ -419,7 +419,7 @@ fn domain_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Disp
                 text: format!(
                     "{}{}  {creator}  denials={count}  {status}",
                     tree_prefix(&trail),
-                    format::hex_id(id.get())
+                    id
                 ),
                 continuation_indent: None,
             })
@@ -473,7 +473,7 @@ fn denial_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Disp
                 theme::observed().add_modifier(ratatui::style::Modifier::BOLD),
             ),
             kind,
-            text: format!("Domain {} ({creator})", format::hex_id(domain.get())),
+            text: format!("Domain {domain} ({creator})"),
             continuation_indent: None,
         });
         let mut groups: HashMap<String, Vec<&AggregatedDenial>> = HashMap::new();
@@ -547,7 +547,7 @@ fn ruleset_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Dis
                 kind,
                 text: format!(
                     "{}  rules={}  {}",
-                    format::ruleset(ruleset.ruleset_id().get(), ruleset.max_observed_version()),
+                    format::ruleset(ruleset.ruleset_id(), ruleset.max_observed_version()),
                     ruleset.filesystem_rule_count() + ruleset.network_rule_count(),
                     lifecycle(ruleset.lifecycle())
                 ),
@@ -634,7 +634,7 @@ fn detail_lines(app: &App, model: &ObservationModel, width: usize) -> Vec<Line<'
     match app.selected.as_ref() {
         Some(RowKind::Domain(id)) | Some(RowKind::DenialDomain(id)) => {
             if let Some(domain) = model.state.domain(*id) {
-                fields.push(("Domain: ".into(), format::hex_id(id.get()), theme::normal()));
+                fields.push(("Domain: ".into(), id.to_string(), theme::normal()));
                 fields.push((
                     "Status: ".into(),
                     lifecycle(domain.lifecycle()).into(),
@@ -645,16 +645,15 @@ fn detail_lines(app: &App, model: &ObservationModel, width: usize) -> Vec<Line<'
                     match domain.parent() {
                         None => "?".into(),
                         Some(DomainParent::Root) => "0".into(),
-                        Some(DomainParent::Domain(id)) => format::hex_id(id.get()),
+                        Some(DomainParent::Domain(id)) => id.to_string(),
                     },
                     theme::normal(),
                 ));
                 fields.push((
                     "Ruleset: ".into(),
-                    domain.ruleset().map_or_else(
-                        || "?".into(),
-                        |r| format::ruleset(r.ruleset_id().get(), Some(r.ruleset_version())),
-                    ),
+                    domain
+                        .ruleset()
+                        .map_or_else(|| "?".into(), |ruleset| ruleset.to_string()),
                     theme::normal(),
                 ));
                 fields.push((
@@ -699,7 +698,7 @@ fn detail_lines(app: &App, model: &ObservationModel, width: usize) -> Vec<Line<'
             if let Some(entry) = model.denial(key) {
                 fields.push((
                     "Domain: ".into(),
-                    format::hex_id(key.domain_id().get()),
+                    key.domain_id().to_string(),
                     theme::normal(),
                 ));
                 fields.push(("Blocked: ".into(), blockers(entry), theme::normal()));
@@ -742,7 +741,7 @@ fn detail_lines(app: &App, model: &ObservationModel, width: usize) -> Vec<Line<'
             if let Some(ruleset) = model.state.ruleset(*id) {
                 fields.push((
                     "Ruleset: ".into(),
-                    format::ruleset(id.get(), ruleset.max_observed_version()),
+                    format::ruleset(*id, ruleset.max_observed_version()),
                     theme::normal(),
                 ));
                 fields.push((
@@ -901,14 +900,15 @@ mod tests {
         AddRuleFsEvent, AddRuleNetEvent, CapturedString, CreateRulesetEvent, DenialContext,
         DenyAccessFsEvent, DenyAccessNetEvent, EnforceDomainEvent, FilesystemAccess,
         FreeDomainEvent, HierarchySnapshot, KernelTimestamp, NetworkAccess, ScopeAccess,
+        MIN_LANDLOCK_ID,
     };
 
-    fn denial(domain: u64, count: u64, timestamp: u64, inode: u64) -> Event {
+    fn denial(domain_offset: u64, count: u64, timestamp: u64, inode: u64) -> Event {
         Event::DenyAccessFs(DenyAccessFsEvent::new(
             KernelTimestamp::from_nanoseconds(timestamp),
             DenialContext::new(
                 HierarchySnapshot::new(
-                    DomainId::new(domain),
+                    DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap(),
                     None,
                     1,
                     CapturedString::new(b"x".to_vec(), false).unwrap(),
@@ -934,7 +934,7 @@ mod tests {
     #[test]
     fn missing_no_new_privs_has_precise_status_and_detail_warning() {
         let mut model = ObservationModel::new();
-        let id = DomainId::new(7);
+        let id = DomainId::new(MIN_LANDLOCK_ID + 7).unwrap();
         model.observe(&Event::EnforceDomain(EnforceDomainEvent::new(
             KernelTimestamp::from_nanoseconds(1),
             id,
@@ -996,13 +996,16 @@ mod tests {
     #[test]
     fn closing_detail_retains_semantic_selection() {
         let mut app = App::new();
-        app.selected = Some(RowKind::Domain(DomainId::new(7)));
+        app.selected = Some(RowKind::Domain(DomainId::new(MIN_LANDLOCK_ID + 7).unwrap()));
         app.detail = true;
 
         app.close_detail();
 
         assert!(!app.detail);
-        assert_eq!(app.selected, Some(RowKind::Domain(DomainId::new(7))));
+        assert_eq!(
+            app.selected,
+            Some(RowKind::Domain(DomainId::new(MIN_LANDLOCK_ID + 7).unwrap()))
+        );
     }
 
     #[test]
@@ -1013,7 +1016,7 @@ mod tests {
                 KernelTimestamp::from_nanoseconds(1),
                 DenialContext::new(
                     HierarchySnapshot::new(
-                        DomainId::new(1),
+                        DomainId::new(MIN_LANDLOCK_ID + 1).unwrap(),
                         None,
                         1,
                         CapturedString::new(b"x".to_vec(), false).unwrap(),
@@ -1059,7 +1062,7 @@ mod tests {
 
     #[test]
     fn ruleset_details_use_one_access_family_prefix() {
-        let id = RulesetId::new(7);
+        let id = RulesetId::new(MIN_LANDLOCK_ID + 7).unwrap();
         let mut model = ObservationModel::new();
         for event in [
             Event::CreateRuleset(CreateRulesetEvent::new(
@@ -1105,7 +1108,7 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "Ruleset: 7.2",
+                "Ruleset: 100000007.2",
                 "Status: allocated",
                 "Handled FS: read_file",
                 "Handled Net: connect_tcp",
@@ -1130,7 +1133,7 @@ mod tests {
             model.observe(&event);
         }
         let rows = denial_rows(&model, None);
-        assert!(rows[0].text.starts_with("Domain 2 ("));
+        assert!(rows[0].text.starts_with("Domain 100000002 ("));
         assert!(!rows[0].text.contains("denials="));
         assert!(rows.iter().any(|row| row.text.contains(AUDIT_VISIBLE_ICON)));
         assert!(rows.iter().any(|row| row.text.contains(TRACE_ONLY_ICON)));
@@ -1230,7 +1233,7 @@ mod tests {
     #[test]
     fn keyboard_selection_resumes_following_after_manual_scroll() {
         let domains = (1..=5)
-            .map(|id| RowKind::Domain(DomainId::new(id)))
+            .map(|offset| RowKind::Domain(DomainId::new(MIN_LANDLOCK_ID + offset).unwrap()))
             .collect::<Vec<_>>();
         let mut app = App::new();
         app.hit.rows = vec![

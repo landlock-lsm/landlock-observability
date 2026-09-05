@@ -191,6 +191,7 @@ fn drag_scrollbar(app: &mut App, row: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use landlock_observability::event::{DomainId, MIN_LANDLOCK_ID};
     use ratatui::layout::Rect;
 
     #[test]
@@ -243,15 +244,13 @@ mod tests {
         app.hit.header_rows = 1;
         app.hit.rows = vec![
             RowKind::Heading,
-            RowKind::Domain(landlock_observability::event::DomainId::new(2)),
+            RowKind::Domain(DomainId::new(MIN_LANDLOCK_ID + 2).unwrap()),
         ];
         app.scroll = 1;
         click_row(&mut app, 6, 6);
         assert_eq!(
             app.selected,
-            Some(RowKind::Domain(
-                landlock_observability::event::DomainId::new(2)
-            ))
+            Some(RowKind::Domain(DomainId::new(MIN_LANDLOCK_ID + 2).unwrap()))
         );
         app.selected = None;
         app.detail = false;

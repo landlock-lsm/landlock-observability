@@ -8,7 +8,8 @@ use crate::event::{
     DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
     DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, DomainId, DomainMembership,
     EnforceDomainEvent, Event, FilesystemAccess, FreeDomainEvent, FreeRulesetEvent,
-    HierarchySnapshot, KernelTimestamp, NetworkAccess, RulesetId, ScopeAccess, UnknownEvent,
+    HierarchySnapshot, KernelTimestamp, LandlockId, LandlockIdKind, NetworkAccess, ScopeAccess,
+    UnknownEvent,
 };
 
 const RECORD_SIZE: usize = 344;
@@ -51,6 +52,14 @@ pub(crate) enum DecodeError {
         /// The invalid field value.
         value: u8,
     },
+    /// An ID field is below the kernel-assigned ID range, including zero.
+    #[non_exhaustive]
+    Id {
+        /// The semantic field name.
+        field: &'static str,
+        /// The invalid field value.
+        value: u64,
+    },
     /// A fixed field could not be read from an otherwise sized record.
     #[non_exhaustive]
     Field {
@@ -71,6 +80,7 @@ impl fmt::Display for DecodeError {
             Self::Boolean { field, value } => {
                 write!(formatter, "invalid boolean {field}: {value}")
             }
+            Self::Id { field, value } => write!(formatter, "invalid Landlock ID {field}: {value}"),
             Self::Field { field } => write!(formatter, "invalid field {field}"),
         }
     }
@@ -117,23 +127,31 @@ fn boolean_at(data: &[u8], offset: usize, field: &'static str) -> Result<bool, D
     }
 }
 
-fn parent(value: u64) -> Option<DomainId> {
-    (value != 0).then(|| DomainId::new(value))
+fn id<K: LandlockIdKind>(value: u64, field: &'static str) -> Result<LandlockId<K>, DecodeError> {
+    LandlockId::new(value).map_err(|_| DecodeError::Id { field, value })
 }
 
-fn domain_membership(value: u64) -> DomainMembership {
+fn parent(value: u64, field: &'static str) -> Result<Option<DomainId>, DecodeError> {
     if value == 0 {
-        DomainMembership::Unsandboxed
+        Ok(None)
     } else {
-        DomainMembership::Sandboxed(DomainId::new(value))
+        id(value, field).map(Some)
+    }
+}
+
+fn domain_membership(value: u64, field: &'static str) -> Result<DomainMembership, DecodeError> {
+    if value == 0 {
+        Ok(DomainMembership::Unsandboxed)
+    } else {
+        id(value, field).map(DomainMembership::Sandboxed)
     }
 }
 
 fn denial_context(data: &[u8]) -> Result<DenialContext, DecodeError> {
     Ok(DenialContext::new(
         HierarchySnapshot::new(
-            DomainId::new(u64_at(data, UNION_OFFSET, "domain_id")?),
-            parent(u64_at(data, 24, "parent_id")?),
+            id(u64_at(data, UNION_OFFSET, "domain_id")?, "domain_id")?,
+            parent(u64_at(data, 24, "parent_id")?, "parent_id")?,
             u32_at(data, 32, "creator_tgid")?,
             string_at(data, 36, COMM_SIZE, "creator_comm")?,
         ),
@@ -158,7 +176,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
     let event = match event_type {
         CREATE_RULESET => Event::CreateRuleset(CreateRulesetEvent::new(
             timestamp,
-            RulesetId::new(u64_at(data, 16, "ruleset_id")?),
+            id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?,
             u32_at(data, 24, "ruleset_version")?,
             FilesystemAccess::from_bits(u32_at(data, 28, "handled_fs")?),
             NetworkAccess::from_bits(u32_at(data, 32, "handled_net")?),
@@ -166,7 +184,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
         )),
         ADD_RULE_FS => Event::AddRuleFs(AddRuleFsEvent::new(
             timestamp,
-            RulesetId::new(u64_at(data, 16, "ruleset_id")?),
+            id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?,
             u32_at(data, 24, "ruleset_version")?,
             FilesystemAccess::from_bits(u32_at(data, 28, "access_rights")?),
             u32_at(data, 32, "device")?,
@@ -175,17 +193,17 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
         )),
         ADD_RULE_NET => Event::AddRuleNet(AddRuleNetEvent::new(
             timestamp,
-            RulesetId::new(u64_at(data, 16, "ruleset_id")?),
+            id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?,
             u32_at(data, 24, "ruleset_version")?,
             NetworkAccess::from_bits(u32_at(data, 28, "access_rights")?),
             u64_at(data, 32, "port")?,
         )),
         CREATE_DOMAIN => Event::CreateDomain(CreateDomainEvent::new(
             timestamp,
-            RulesetId::new(u64_at(data, 16, "ruleset_id")?),
+            id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?,
             u32_at(data, 24, "ruleset_version")?,
-            DomainId::new(u64_at(data, 32, "domain_id")?),
-            parent(u64_at(data, 40, "parent_id")?),
+            id(u64_at(data, 32, "domain_id")?, "domain_id")?,
+            parent(u64_at(data, 40, "parent_id")?, "parent_id")?,
             u32_at(data, 48, "creator_tgid")?,
             string_at(data, 52, COMM_SIZE, "creator_comm")?,
         )),
@@ -207,14 +225,14 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
         DENY_PTRACE => Event::DenyPtrace(DenyPtraceEvent::new(
             timestamp,
             denial_context(data)?,
-            domain_membership(u64_at(data, 72, "tracee_domain")?),
+            domain_membership(u64_at(data, 72, "tracee_domain")?, "tracee_domain")?,
             u32_at(data, 80, "tracee_pid")?,
             string_at(data, 84, COMM_SIZE, "tracee_comm")?,
         )),
         DENY_SCOPE_SIGNAL => Event::DenyScopeSignal(DenyScopeSignalEvent::new(
             timestamp,
             denial_context(data)?,
-            domain_membership(u64_at(data, 72, "target_domain")?),
+            domain_membership(u64_at(data, 72, "target_domain")?, "target_domain")?,
             u32_at(data, 80, "target_pid")?,
             string_at(data, 84, COMM_SIZE, "target_comm")?,
         )),
@@ -222,23 +240,23 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
             Event::DenyScopeAbstractUnixSocket(DenyScopeAbstractUnixSocketEvent::new(
                 timestamp,
                 denial_context(data)?,
-                domain_membership(u64_at(data, 72, "peer_domain")?),
+                domain_membership(u64_at(data, 72, "peer_domain")?, "peer_domain")?,
                 u32_at(data, 80, "peer_pid")?,
             ))
         }
         FREE_DOMAIN => Event::FreeDomain(FreeDomainEvent::new(
             timestamp,
-            DomainId::new(u64_at(data, 16, "domain_id")?),
+            id(u64_at(data, 16, "domain_id")?, "domain_id")?,
             u64_at(data, 24, "denial_count")?,
         )),
         FREE_RULESET => Event::FreeRuleset(FreeRulesetEvent::new(
             timestamp,
-            RulesetId::new(u64_at(data, 16, "ruleset_id")?),
+            id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?,
             u32_at(data, 24, "ruleset_version")?,
         )),
         ENFORCE_DOMAIN => Event::EnforceDomain(EnforceDomainEvent::new(
             timestamp,
-            DomainId::new(u64_at(data, 16, "domain_id")?),
+            id(u64_at(data, 16, "domain_id")?, "domain_id")?,
             u32_at(data, 24, "enforcing_tid")?,
             boolean_at(data, 28, "complete")?,
             boolean_at(data, 29, "process_wide")?,
@@ -252,6 +270,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::RulesetId;
 
     #[cfg(target_endian = "little")]
     const FIXTURES: [&[u8; RECORD_SIZE]; 12] = [
@@ -300,8 +319,8 @@ mod tests {
     ) -> DenialContext {
         DenialContext::new(
             HierarchySnapshot::new(
-                DomainId::new(domain_id),
-                parent_id.map(DomainId::new),
+                DomainId::new(domain_id).unwrap(),
+                parent_id.map(|parent_id| DomainId::new(parent_id).unwrap()),
                 creator_tgid,
                 creator_comm,
             ),
@@ -316,7 +335,7 @@ mod tests {
         let expected = [
             Event::CreateRuleset(CreateRulesetEvent::new(
                 KernelTimestamp::from_nanoseconds(0x1100000000000001),
-                RulesetId::new(0xA100000000000001),
+                RulesetId::new(0xA100000000000001).unwrap(),
                 0x12000001,
                 FilesystemAccess::from_bits(0x80010005),
                 NetworkAccess::from_bits(0x8000000A),
@@ -324,7 +343,7 @@ mod tests {
             )),
             Event::AddRuleFs(AddRuleFsEvent::new(
                 KernelTimestamp::from_nanoseconds(0x2200000000000002),
-                RulesetId::new(0xA200000000000002),
+                RulesetId::new(0xA200000000000002).unwrap(),
                 0x23000002,
                 FilesystemAccess::from_bits(0x80004006),
                 0x34000002,
@@ -333,16 +352,16 @@ mod tests {
             )),
             Event::AddRuleNet(AddRuleNetEvent::new(
                 KernelTimestamp::from_nanoseconds(0x3300000000000003),
-                RulesetId::new(0xA300000000000003),
+                RulesetId::new(0xA300000000000003).unwrap(),
                 0x34000003,
                 NetworkAccess::from_bits(0x80000009),
                 0x5600000000000003,
             )),
             Event::CreateDomain(CreateDomainEvent::new(
                 KernelTimestamp::from_nanoseconds(0x4400000000000004),
-                RulesetId::new(0xA400000000000004),
+                RulesetId::new(0xA400000000000004).unwrap(),
                 0x45000004,
-                DomainId::new(0xD400000000000004),
+                DomainId::new(0xD400000000000004).unwrap(),
                 None,
                 0x56000004,
                 captured(b"sixteen-byte-cmd", true),
@@ -404,7 +423,7 @@ mod tests {
                     false,
                     false,
                 ),
-                DomainMembership::Sandboxed(DomainId::new(0xE800000000000008)),
+                DomainMembership::Sandboxed(DomainId::new(0xE800000000000008).unwrap()),
                 0x97000008,
                 captured(b"signal-target", false),
             )),
@@ -419,22 +438,22 @@ mod tests {
                     true,
                     false,
                 ),
-                DomainMembership::Sandboxed(DomainId::new(0xE900000000000009)),
+                DomainMembership::Sandboxed(DomainId::new(0xE900000000000009).unwrap()),
                 0xA8000009,
             )),
             Event::FreeDomain(FreeDomainEvent::new(
                 KernelTimestamp::from_nanoseconds(0xAA0000000000000A),
-                DomainId::new(0xDA0000000000000A),
+                DomainId::new(0xDA0000000000000A).unwrap(),
                 0xAB0000000000000A,
             )),
             Event::FreeRuleset(FreeRulesetEvent::new(
                 KernelTimestamp::from_nanoseconds(0xBB0000000000000B),
-                RulesetId::new(0xAB0000000000000B),
+                RulesetId::new(0xAB0000000000000B).unwrap(),
                 0xBC00000B,
             )),
             Event::EnforceDomain(EnforceDomainEvent::new(
                 KernelTimestamp::from_nanoseconds(0xCC0000000000000C),
-                DomainId::new(0xDC0000000000000C),
+                DomainId::new(0xDC0000000000000C).unwrap(),
                 0xCD00000C,
                 true,
                 false,
@@ -458,8 +477,14 @@ mod tests {
         count: u64,
         flags: (bool, bool),
     ) {
-        assert_eq!(value.hierarchy().domain_id(), DomainId::new(domain_id));
-        assert_eq!(value.hierarchy().parent_id(), parent_id.map(DomainId::new));
+        assert_eq!(
+            value.hierarchy().domain_id(),
+            DomainId::new(domain_id).unwrap()
+        );
+        assert_eq!(
+            value.hierarchy().parent_id(),
+            parent_id.map(|parent_id| DomainId::new(parent_id).unwrap())
+        );
         assert_eq!(value.hierarchy().creator_tgid(), creator_tgid);
         assert_eq!(value.hierarchy().creator_comm().as_bytes(), creator_comm.0);
         assert_eq!(
@@ -477,7 +502,10 @@ mod tests {
             panic!()
         };
         assert_eq!(value.timestamp().as_nanoseconds(), 0x1100000000000001);
-        assert_eq!(value.ruleset_id(), RulesetId::new(0xA100000000000001));
+        assert_eq!(
+            value.ruleset_id(),
+            RulesetId::new(0xA100000000000001).unwrap()
+        );
         assert_eq!(value.ruleset_version(), 0x12000001);
         assert_eq!(value.handled_fs().bits(), 0x80010005);
         assert_eq!(value.handled_net().bits(), 0x8000000A);
@@ -487,7 +515,10 @@ mod tests {
             panic!()
         };
         assert_eq!(value.timestamp().as_nanoseconds(), 0x2200000000000002);
-        assert_eq!(value.ruleset_id(), RulesetId::new(0xA200000000000002));
+        assert_eq!(
+            value.ruleset_id(),
+            RulesetId::new(0xA200000000000002).unwrap()
+        );
         assert_eq!(value.ruleset_version(), 0x23000002);
         assert_eq!(value.access_rights().bits(), 0x80004006);
         assert_eq!(value.device(), 0x34000002);
@@ -498,7 +529,10 @@ mod tests {
             panic!()
         };
         assert_eq!(value.timestamp().as_nanoseconds(), 0x3300000000000003);
-        assert_eq!(value.ruleset_id(), RulesetId::new(0xA300000000000003));
+        assert_eq!(
+            value.ruleset_id(),
+            RulesetId::new(0xA300000000000003).unwrap()
+        );
         assert_eq!(value.ruleset_version(), 0x34000003);
         assert_eq!(value.access_rights().bits(), 0x80000009);
         assert_eq!(value.port(), 0x5600000000000003);
@@ -507,9 +541,15 @@ mod tests {
             panic!()
         };
         assert_eq!(value.timestamp().as_nanoseconds(), 0x4400000000000004);
-        assert_eq!(value.ruleset_id(), RulesetId::new(0xA400000000000004));
+        assert_eq!(
+            value.ruleset_id(),
+            RulesetId::new(0xA400000000000004).unwrap()
+        );
         assert_eq!(value.ruleset_version(), 0x45000004);
-        assert_eq!(value.domain_id(), DomainId::new(0xD400000000000004));
+        assert_eq!(
+            value.domain_id(),
+            DomainId::new(0xD400000000000004).unwrap()
+        );
         assert_eq!(value.parent_id(), None);
         assert_eq!(value.creator_tgid(), 0x56000004);
         assert_eq!(value.creator_comm().as_bytes(), b"sixteen-byte-cmd");
@@ -581,7 +621,7 @@ mod tests {
         );
         assert_eq!(
             value.target_domain(),
-            DomainMembership::Sandboxed(DomainId::new(0xE800000000000008))
+            DomainMembership::Sandboxed(DomainId::new(0xE800000000000008).unwrap())
         );
         assert_eq!(value.target_pid(), 0x97000008);
         assert_eq!(value.target_comm().as_bytes(), b"signal-target");
@@ -601,7 +641,7 @@ mod tests {
         );
         assert_eq!(
             value.peer_domain(),
-            DomainMembership::Sandboxed(DomainId::new(0xE900000000000009))
+            DomainMembership::Sandboxed(DomainId::new(0xE900000000000009).unwrap())
         );
         assert_eq!(value.peer_pid(), 0xA8000009);
 
@@ -609,21 +649,30 @@ mod tests {
             panic!()
         };
         assert_eq!(value.timestamp().as_nanoseconds(), 0xAA0000000000000A);
-        assert_eq!(value.domain_id(), DomainId::new(0xDA0000000000000A));
+        assert_eq!(
+            value.domain_id(),
+            DomainId::new(0xDA0000000000000A).unwrap()
+        );
         assert_eq!(value.denial_count(), 0xAB0000000000000A);
 
         let Event::FreeRuleset(value) = decode(FIXTURES[10]).unwrap() else {
             panic!()
         };
         assert_eq!(value.timestamp().as_nanoseconds(), 0xBB0000000000000B);
-        assert_eq!(value.ruleset_id(), RulesetId::new(0xAB0000000000000B));
+        assert_eq!(
+            value.ruleset_id(),
+            RulesetId::new(0xAB0000000000000B).unwrap()
+        );
         assert_eq!(value.ruleset_version(), 0xBC00000B);
 
         let Event::EnforceDomain(value) = decode(FIXTURES[11]).unwrap() else {
             panic!()
         };
         assert_eq!(value.timestamp().as_nanoseconds(), 0xCC0000000000000C);
-        assert_eq!(value.domain_id(), DomainId::new(0xDC0000000000000C));
+        assert_eq!(
+            value.domain_id(),
+            DomainId::new(0xDC0000000000000C).unwrap()
+        );
         assert_eq!(value.enforcing_tid(), 0xCD00000C);
         assert!(value.complete());
         assert!(!value.process_wide());
@@ -698,6 +747,51 @@ mod tests {
             .to_string(),
             "invalid field semantic_field"
         );
+    }
+
+    #[test]
+    fn validates_id_boundaries_and_zero_sentinels() {
+        let mut ruleset = *FIXTURES[0];
+        ruleset[16..24].copy_from_slice(&0xffff_ffff_u64.to_ne_bytes());
+        let error = DecodeError::Id {
+            field: "ruleset_id",
+            value: 0xffff_ffff,
+        };
+        assert_eq!(decode(&ruleset), Err(error.clone()));
+        assert_eq!(
+            error.to_string(),
+            "invalid Landlock ID ruleset_id: 4294967295"
+        );
+
+        ruleset[16..24].copy_from_slice(&0x1_0000_0000_u64.to_ne_bytes());
+        let Event::CreateRuleset(event) = decode(&ruleset).unwrap() else {
+            panic!()
+        };
+        assert_eq!(event.ruleset_id().get(), 0x1_0000_0000);
+
+        for (fixture, offset, field) in [
+            (3, 32, "domain_id"),
+            (5, 24, "parent_id"),
+            (7, 72, "target_domain"),
+        ] {
+            let mut data = *FIXTURES[fixture];
+            data[offset..offset + 8].copy_from_slice(&1_u64.to_ne_bytes());
+            assert_eq!(decode(&data), Err(DecodeError::Id { field, value: 1 }));
+        }
+
+        let mut root = *FIXTURES[3];
+        root[40..48].copy_from_slice(&0_u64.to_ne_bytes());
+        let Event::CreateDomain(root) = decode(&root).unwrap() else {
+            panic!()
+        };
+        assert_eq!(root.parent_id(), None);
+
+        let mut unsandboxed = *FIXTURES[7];
+        unsandboxed[72..80].copy_from_slice(&0_u64.to_ne_bytes());
+        let Event::DenyScopeSignal(unsandboxed) = decode(&unsandboxed).unwrap() else {
+            panic!()
+        };
+        assert_eq!(unsandboxed.target_domain(), DomainMembership::Unsandboxed);
     }
 
     #[test]

@@ -519,16 +519,26 @@ mod tests {
     use crate::event::{
         DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
         DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, FreeDomainEvent, HierarchySnapshot,
-        UnknownEvent,
+        UnknownEvent, MIN_LANDLOCK_ID,
     };
 
     fn string(value: &[u8]) -> CapturedString {
         CapturedString::new(value.to_vec(), false).unwrap()
     }
 
-    fn context(domain: u64, cumulative: u64, same_exec: bool, logged: bool) -> DenialContext {
+    fn context(
+        domain_offset: u64,
+        cumulative: u64,
+        same_exec: bool,
+        logged: bool,
+    ) -> DenialContext {
         DenialContext::new(
-            HierarchySnapshot::new(DomainId::new(domain), None, 10, string(b"creator")),
+            HierarchySnapshot::new(
+                DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap(),
+                None,
+                10,
+                string(b"creator"),
+            ),
             cumulative,
             same_exec,
             logged,
@@ -537,7 +547,7 @@ mod tests {
 
     fn fs(
         timestamp: u64,
-        domain: u64,
+        domain_offset: u64,
         cumulative: u64,
         blockers: u32,
         target: (u32, u64, &[u8]),
@@ -545,7 +555,7 @@ mod tests {
     ) -> Event {
         Event::DenyAccessFs(DenyAccessFsEvent::new(
             KernelTimestamp::from_nanoseconds(timestamp),
-            context(domain, cumulative, flags.0, flags.1),
+            context(domain_offset, cumulative, flags.0, flags.1),
             FilesystemAccess::from_bits(blockers),
             target.0,
             target.1,
@@ -553,10 +563,10 @@ mod tests {
         ))
     }
 
-    fn network(timestamp: u64, domain: u64, blockers: u32, ports: (u64, u64)) -> Event {
+    fn network(timestamp: u64, domain_offset: u64, blockers: u32, ports: (u64, u64)) -> Event {
         Event::DenyAccessNet(DenyAccessNetEvent::new(
             KernelTimestamp::from_nanoseconds(timestamp),
-            context(domain, 1, false, true),
+            context(domain_offset, 1, false, true),
             NetworkAccess::from_bits(blockers),
             ports.0,
             ports.1,
@@ -568,7 +578,7 @@ mod tests {
         let ptrace = Event::DenyPtrace(DenyPtraceEvent::new(
             KernelTimestamp::from_nanoseconds(3),
             context(12, 1, false, false),
-            DomainMembership::Sandboxed(DomainId::new(20)),
+            DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 20).unwrap()),
             30,
             string(b"tracee"),
         ));
@@ -582,7 +592,7 @@ mod tests {
         let unix = Event::DenyScopeAbstractUnixSocket(DenyScopeAbstractUnixSocketEvent::new(
             KernelTimestamp::from_nanoseconds(5),
             context(14, 1, false, false),
-            DomainMembership::Sandboxed(DomainId::new(21)),
+            DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 21).unwrap()),
             32,
         ));
         let mut aggregator = DenialAggregator::new();
@@ -594,32 +604,32 @@ mod tests {
 
         assert_eq!(aggregator.len(), 5);
         let fs_key = DenialKey::Filesystem(FilesystemDenialKey::new(
-            DomainId::new(10),
+            DomainId::new(MIN_LANDLOCK_ID + 10).unwrap(),
             FilesystemAccess::from_bits(0x8000_0001),
             2,
             3,
         ));
         let network_key = DenialKey::Network(NetworkDenialKey::new(
-            DomainId::new(11),
+            DomainId::new(MIN_LANDLOCK_ID + 11).unwrap(),
             NetworkAccess::from_bits(0x8000_0002),
             100,
             200,
         ));
         let ptrace_key = DenialKey::Ptrace(PtraceDenialKey::new(
-            DomainId::new(12),
-            DomainMembership::Sandboxed(DomainId::new(20)),
+            DomainId::new(MIN_LANDLOCK_ID + 12).unwrap(),
+            DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 20).unwrap()),
             30,
             string(b"tracee"),
         ));
         let signal_key = DenialKey::Signal(SignalDenialKey::new(
-            DomainId::new(13),
+            DomainId::new(MIN_LANDLOCK_ID + 13).unwrap(),
             DomainMembership::Unsandboxed,
             31,
             string(b"target"),
         ));
         let unix_key = DenialKey::AbstractUnixSocket(AbstractUnixSocketDenialKey::new(
-            DomainId::new(14),
-            DomainMembership::Sandboxed(DomainId::new(21)),
+            DomainId::new(MIN_LANDLOCK_ID + 14).unwrap(),
+            DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 21).unwrap()),
             32,
         ));
         assert!(aggregator.get(&fs_key).is_some());
@@ -627,7 +637,10 @@ mod tests {
         assert!(aggregator.get(&ptrace_key).is_some());
         assert!(aggregator.get(&signal_key).is_some());
         assert!(aggregator.get(&unix_key).is_some());
-        assert_eq!(fs_key.domain_id(), DomainId::new(10));
+        assert_eq!(
+            fs_key.domain_id(),
+            DomainId::new(MIN_LANDLOCK_ID + 10).unwrap()
+        );
 
         let DenialKey::Filesystem(key) = fs_key else {
             panic!("filesystem key changed variant");
@@ -644,7 +657,7 @@ mod tests {
         };
         assert_eq!(
             key.tracee_domain(),
-            DomainMembership::Sandboxed(DomainId::new(20))
+            DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 20).unwrap())
         );
         assert_eq!(key.tracee_pid(), 30);
         assert_eq!(key.tracee_comm().as_bytes(), b"tracee");
@@ -659,7 +672,7 @@ mod tests {
         };
         assert_eq!(
             key.peer_domain(),
-            DomainMembership::Sandboxed(DomainId::new(21))
+            DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 21).unwrap())
         );
         assert_eq!(key.peer_pid(), 32);
     }
@@ -730,14 +743,17 @@ mod tests {
             task_denial(true, DomainMembership::Unsandboxed, 1, b"task"),
             task_denial(
                 false,
-                DomainMembership::Sandboxed(DomainId::new(2)),
+                DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 2).unwrap()),
                 1,
                 b"task",
             ),
             task_denial(false, DomainMembership::Unsandboxed, 2, b"task"),
             task_denial(false, DomainMembership::Unsandboxed, 1, b"other"),
             unix_denial(DomainMembership::Unsandboxed, 1),
-            unix_denial(DomainMembership::Sandboxed(DomainId::new(2)), 1),
+            unix_denial(
+                DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 2).unwrap()),
+                1,
+            ),
             unix_denial(DomainMembership::Unsandboxed, 2),
         ];
         let mut aggregator = DenialAggregator::new();
@@ -762,7 +778,9 @@ mod tests {
         aggregator.observe(&fs(1, 1, 1, 1, (1, 1, b"/a"), (false, false)));
         aggregator.observe(&fs(1, 1, 1, 0x8000_0001, (1, 1, b"/a"), (false, false)));
         aggregator.observe(&signal(DomainMembership::Unsandboxed));
-        aggregator.observe(&signal(DomainMembership::Sandboxed(DomainId::new(2))));
+        aggregator.observe(&signal(DomainMembership::Sandboxed(
+            DomainId::new(MIN_LANDLOCK_ID + 2).unwrap(),
+        )));
         assert_eq!(aggregator.len(), 4);
     }
 
@@ -771,7 +789,7 @@ mod tests {
         let mut aggregator = DenialAggregator::new();
         aggregator.observe(&Event::FreeDomain(FreeDomainEvent::new(
             KernelTimestamp::from_nanoseconds(1),
-            DomainId::new(1),
+            DomainId::new(MIN_LANDLOCK_ID + 1).unwrap(),
             2,
         )));
         aggregator.observe(&Event::Unknown(UnknownEvent::new(
@@ -802,7 +820,7 @@ mod tests {
         assert_eq!(aggregator.len(), 1);
         assert_eq!(
             aggregator.entries().next().unwrap().key().domain_id(),
-            DomainId::new(2)
+            DomainId::new(MIN_LANDLOCK_ID + 2).unwrap()
         );
     }
 
@@ -812,13 +830,13 @@ mod tests {
         let second = fs(1, 2, 1, 1, (1, 1, b"/second"), (false, false));
         let third = fs(1, 3, 1, 1, (1, 1, b"/third"), (false, false));
         let first_key = DenialKey::Filesystem(FilesystemDenialKey::new(
-            DomainId::new(1),
+            DomainId::new(MIN_LANDLOCK_ID + 1).unwrap(),
             FilesystemAccess::from_bits(1),
             1,
             1,
         ));
         let second_key = DenialKey::Filesystem(FilesystemDenialKey::new(
-            DomainId::new(2),
+            DomainId::new(MIN_LANDLOCK_ID + 2).unwrap(),
             FilesystemAccess::from_bits(1),
             1,
             1,
@@ -849,19 +867,19 @@ mod tests {
         let second = fs(7, 2, 1, 1, (1, 1, b"/second"), (false, false));
         let third = fs(7, 3, 1, 1, (1, 1, b"/third"), (false, false));
         let first_key = DenialKey::Filesystem(FilesystemDenialKey::new(
-            DomainId::new(1),
+            DomainId::new(MIN_LANDLOCK_ID + 1).unwrap(),
             FilesystemAccess::from_bits(1),
             1,
             1,
         ));
         let second_key = DenialKey::Filesystem(FilesystemDenialKey::new(
-            DomainId::new(2),
+            DomainId::new(MIN_LANDLOCK_ID + 2).unwrap(),
             FilesystemAccess::from_bits(1),
             1,
             1,
         ));
         let third_key = DenialKey::Filesystem(FilesystemDenialKey::new(
-            DomainId::new(3),
+            DomainId::new(MIN_LANDLOCK_ID + 3).unwrap(),
             FilesystemAccess::from_bits(1),
             1,
             1,

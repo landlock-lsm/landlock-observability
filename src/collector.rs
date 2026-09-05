@@ -564,7 +564,7 @@ fn run_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{Event, FreeRulesetEvent, KernelTimestamp, RulesetId};
+    use crate::event::{Event, FreeRulesetEvent, KernelTimestamp, RulesetId, MIN_LANDLOCK_ID};
     use std::time::Instant;
 
     #[cfg(target_endian = "little")]
@@ -574,11 +574,11 @@ mod tests {
     const RULESET_FREE_FIXTURE: &[u8; 344] =
         include_bytes!("../tests/fixtures/wire/11-ruleset-free-big-endian.bin");
 
-    fn event(id: u64) -> Event {
+    fn event(id_offset: u64) -> Event {
         Event::FreeRuleset(FreeRulesetEvent::new(
-            KernelTimestamp::from_nanoseconds(id),
-            RulesetId::new(id),
-            id as u32,
+            KernelTimestamp::from_nanoseconds(id_offset),
+            RulesetId::new(MIN_LANDLOCK_ID + id_offset).unwrap(),
+            id_offset as u32,
         ))
     }
 
