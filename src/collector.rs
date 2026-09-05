@@ -25,6 +25,8 @@ mod bpf {
 
 use bpf::LandlockObservabilitySkelBuilder;
 
+mod tracepoint;
+
 const DEFAULT_EVENT_CAPACITY: usize = 1024;
 const MIN_EVENT_CAPACITY: usize = 1;
 const MAX_EVENT_CAPACITY: usize = 65_536;
@@ -221,6 +223,11 @@ impl Default for CollectorConfig {
 pub enum CollectorStartErrorKind {
     /// The private worker thread could not be spawned.
     Spawn,
+    /// The target lacks a complete supported Landlock tracing interface.
+    ///
+    /// This is reported only when a compatibility-shaped BPF load failure is
+    /// followed by a conclusive diagnosis from canonical vmlinux BTF.
+    UnsupportedKernel,
     /// The embedded BPF object could not be opened.
     Open,
     /// The BPF object could not be loaded into the kernel.
@@ -239,6 +246,7 @@ impl CollectorStartErrorKind {
     fn description(self) -> &'static str {
         match self {
             Self::Spawn => "spawn collector worker",
+            Self::UnsupportedKernel => "load a supported Landlock tracing interface",
             Self::Open => "open embedded BPF object",
             Self::Load => "load BPF object",
             Self::Attach => "attach BPF programs",
@@ -252,7 +260,9 @@ impl CollectorStartErrorKind {
 ///
 /// Use [`CollectorStartError::kind()`] to identify the startup stage.
 /// Underlying spawning and libbpf errors remain available through
-/// [`Error::source()`]. A worker panic has a [`CollectorWorkerPanic`] source.
+/// [`Error::source()`]. [`CollectorStartErrorKind::UnsupportedKernel`] retains
+/// the original BPF load error as its source. A worker panic has a
+/// [`CollectorWorkerPanic`] source.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct CollectorStartError {
@@ -820,10 +830,17 @@ fn run_worker(
             return;
         }
     };
+    // libbpf resolves every tp_btf target ID while loading the programs, before
+    // the later link-attachment stage.
     let mut skeleton = match open.load() {
         Ok(skeleton) => skeleton,
         Err(error) => {
-            startup_failure(&startup, CollectorStartErrorKind::Load, error);
+            let kind = if tracepoint::generation_1_is_missing(&error) {
+                CollectorStartErrorKind::UnsupportedKernel
+            } else {
+                CollectorStartErrorKind::Load
+            };
+            startup_failure(&startup, kind, error);
             return;
         }
     };
@@ -1200,6 +1217,16 @@ mod tests {
             Some("callback panic")
         );
         assert!(panic.borrow().is_none());
+    }
+
+    #[test]
+    fn unsupported_kernel_retains_the_load_error() {
+        let error = CollectorStartError::new(
+            CollectorStartErrorKind::UnsupportedKernel,
+            std::io::Error::other("fake BPF load failure"),
+        );
+        assert_eq!(error.kind(), CollectorStartErrorKind::UnsupportedKernel);
+        assert_eq!(error.source().unwrap().to_string(), "fake BPF load failure");
     }
 
     #[test]

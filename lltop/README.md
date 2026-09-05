@@ -5,6 +5,17 @@ landlock-observability library to attach the BPF collector,
 reconstruct partial domain and ruleset state, and aggregate repeated denials.
 The minimum supported Rust version is 1.88.
 
+## Supported Linux versions
+
+lltop currently supports upstream Linux v7.3-rc1, the CI baseline, and later
+kernels with all required Landlock tracepoints and BPF/BTF features. Earlier
+upstream kernels and partial backports are unsupported. Older vendor kernels
+with a complete backport may work but are not tested in CI.
+
+> **Pre-release warning:** Until Linux v7.3 is released, its new Landlock
+> tracepoint interface may still change. Later release candidates may therefore
+> require an update to this project.
+
 > **Memory-use warning:** Interactive and batch modes retain reconstructed
 > `State`, which currently has no capacity or eviction policy. Memory can grow
 > without a configured bound in a long-running process. Configurable retention
