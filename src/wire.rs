@@ -270,7 +270,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::RulesetId;
+    use crate::event::{Denial, Observation, RulesetId};
 
     #[cfg(target_endian = "little")]
     const FIXTURES: [&[u8; RECORD_SIZE]; 12] = [
@@ -328,6 +328,60 @@ mod tests {
             same_exec,
             logged,
         )
+    }
+
+    fn generic_timestamp<T: Observation>(observation: &T) -> KernelTimestamp {
+        observation.timestamp()
+    }
+
+    fn generic_context<T: Denial>(denial: &T) -> &DenialContext {
+        denial.context()
+    }
+
+    fn assert_concrete_trait_dispatch(event: &Event) {
+        let timestamp = match event {
+            Event::CreateRuleset(value) => generic_timestamp(value),
+            Event::AddRuleFs(value) => generic_timestamp(value),
+            Event::AddRuleNet(value) => generic_timestamp(value),
+            Event::CreateDomain(value) => generic_timestamp(value),
+            Event::DenyAccessFs(value) => {
+                let _ = generic_context(value);
+                generic_timestamp(value)
+            }
+            Event::DenyAccessNet(value) => {
+                let _ = generic_context(value);
+                generic_timestamp(value)
+            }
+            Event::DenyPtrace(value) => {
+                let _ = generic_context(value);
+                generic_timestamp(value)
+            }
+            Event::DenyScopeSignal(value) => {
+                let _ = generic_context(value);
+                generic_timestamp(value)
+            }
+            Event::DenyScopeAbstractUnixSocket(value) => {
+                let _ = generic_context(value);
+                generic_timestamp(value)
+            }
+            Event::FreeDomain(value) => generic_timestamp(value),
+            Event::FreeRuleset(value) => generic_timestamp(value),
+            Event::EnforceDomain(value) => generic_timestamp(value),
+            Event::Unknown(value) => generic_timestamp(value),
+        };
+        assert_eq!(generic_timestamp(event), timestamp);
+    }
+
+    #[test]
+    fn traits_dispatch_every_event_family() {
+        for fixture in FIXTURES {
+            assert_concrete_trait_dispatch(&decode(fixture).unwrap());
+        }
+        assert_concrete_trait_dispatch(&Event::Unknown(UnknownEvent::new(
+            KernelTimestamp::from_nanoseconds(13),
+            255,
+            RECORD_SIZE,
+        )));
     }
 
     #[test]

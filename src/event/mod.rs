@@ -433,15 +433,20 @@ impl DenialContext {
     }
 }
 
-macro_rules! common_event {
-    ($type:ident) => {
-        impl $type {
-            /// Returns the event timestamp.
-            pub const fn timestamp(&self) -> KernelTimestamp {
-                self.timestamp
-            }
-        }
-    };
+/// A timestamped semantic observation.
+///
+/// This trait is sealed and cannot be implemented outside this crate.
+pub trait Observation: sealed::Sealed {
+    /// Returns the monotonic kernel timestamp captured for this observation.
+    fn timestamp(&self) -> KernelTimestamp;
+}
+
+/// A semantic denial observation.
+///
+/// This trait is sealed and cannot be implemented outside this crate.
+pub trait Denial: Observation {
+    /// Returns the hierarchy and kernel denial facts shared by denial events.
+    fn context(&self) -> &DenialContext;
 }
 
 /// A ruleset creation event.
@@ -495,7 +500,12 @@ impl CreateRulesetEvent {
         self.scoped
     }
 }
-common_event!(CreateRulesetEvent);
+impl sealed::Sealed for CreateRulesetEvent {}
+impl Observation for CreateRulesetEvent {
+    fn timestamp(&self) -> KernelTimestamp {
+        self.timestamp
+    }
+}
 
 /// A filesystem rule addition event.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -555,7 +565,12 @@ impl AddRuleFsEvent {
         &self.pathname
     }
 }
-common_event!(AddRuleFsEvent);
+impl sealed::Sealed for AddRuleFsEvent {}
+impl Observation for AddRuleFsEvent {
+    fn timestamp(&self) -> KernelTimestamp {
+        self.timestamp
+    }
+}
 
 /// A network rule addition event.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -601,7 +616,12 @@ impl AddRuleNetEvent {
         self.port
     }
 }
-common_event!(AddRuleNetEvent);
+impl sealed::Sealed for AddRuleNetEvent {}
+impl Observation for AddRuleNetEvent {
+    fn timestamp(&self) -> KernelTimestamp {
+        self.timestamp
+    }
+}
 
 /// A domain creation event.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -664,21 +684,11 @@ impl CreateDomainEvent {
         &self.creator_comm
     }
 }
-common_event!(CreateDomainEvent);
-
-macro_rules! denial_common {
-    ($type:ident) => {
-        impl $type {
-            /// Returns the monotonic kernel timestamp captured for this event.
-            pub const fn timestamp(&self) -> KernelTimestamp {
-                self.timestamp
-            }
-            /// Returns the hierarchy and kernel denial facts shared by denial events.
-            pub const fn context(&self) -> &DenialContext {
-                &self.context
-            }
-        }
-    };
+impl sealed::Sealed for CreateDomainEvent {}
+impl Observation for CreateDomainEvent {
+    fn timestamp(&self) -> KernelTimestamp {
+        self.timestamp
+    }
 }
 
 /// A filesystem access denial.
@@ -728,7 +738,17 @@ impl DenyAccessFsEvent {
         &self.pathname
     }
 }
-denial_common!(DenyAccessFsEvent);
+impl sealed::Sealed for DenyAccessFsEvent {}
+impl Observation for DenyAccessFsEvent {
+    fn timestamp(&self) -> KernelTimestamp {
+        self.timestamp
+    }
+}
+impl Denial for DenyAccessFsEvent {
+    fn context(&self) -> &DenialContext {
+        &self.context
+    }
+}
 
 /// A network access denial.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -770,76 +790,121 @@ impl DenyAccessNetEvent {
         self.destination_port
     }
 }
-denial_common!(DenyAccessNetEvent);
-
-macro_rules! task_denial {
-    (
-        $type:ident,
-        $description:literal,
-        $domain:ident,
-        $pid:ident,
-        $comm:ident,
-        $party:literal
-    ) => {
-        #[doc = $description]
-        #[derive(Clone, Debug, Eq, PartialEq)]
-        #[non_exhaustive]
-        pub struct $type {
-            timestamp: KernelTimestamp,
-            context: DenialContext,
-            $domain: DomainMembership,
-            $pid: u32,
-            $comm: CapturedString,
-        }
-        impl $type {
-            /// Creates this semantic value from its captured fields.
-            pub fn new(
-                timestamp: KernelTimestamp,
-                context: DenialContext,
-                $domain: DomainMembership,
-                $pid: u32,
-                $comm: CapturedString,
-            ) -> Self {
-                Self {
-                    timestamp,
-                    context,
-                    $domain,
-                    $pid,
-                    $comm,
-                }
-            }
-            #[doc = concat!("Returns whether the ", $party, " was unsandboxed or in a domain.")]
-            pub const fn $domain(&self) -> DomainMembership {
-                self.$domain
-            }
-            #[doc = concat!("Returns the thread-group ID of the ", $party, " task.")]
-            pub const fn $pid(&self) -> u32 {
-                self.$pid
-            }
-            #[doc = concat!("Returns the captured command name of the ", $party, " task.")]
-            pub const fn $comm(&self) -> &CapturedString {
-                &self.$comm
-            }
-        }
-        denial_common!($type);
-    };
+impl sealed::Sealed for DenyAccessNetEvent {}
+impl Observation for DenyAccessNetEvent {
+    fn timestamp(&self) -> KernelTimestamp {
+        self.timestamp
+    }
 }
-task_denial!(
-    DenyPtraceEvent,
-    "A ptrace denial.",
-    tracee_domain,
-    tracee_pid,
-    tracee_comm,
-    "tracee"
-);
-task_denial!(
-    DenyScopeSignalEvent,
-    "A signal denial.",
-    target_domain,
-    target_pid,
-    target_comm,
-    "target"
-);
+impl Denial for DenyAccessNetEvent {
+    fn context(&self) -> &DenialContext {
+        &self.context
+    }
+}
+
+/// A ptrace denial.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct DenyPtraceEvent {
+    timestamp: KernelTimestamp,
+    context: DenialContext,
+    tracee_domain: DomainMembership,
+    tracee_pid: u32,
+    tracee_comm: CapturedString,
+}
+impl DenyPtraceEvent {
+    /// Creates this semantic value from its captured fields.
+    pub fn new(
+        timestamp: KernelTimestamp,
+        context: DenialContext,
+        tracee_domain: DomainMembership,
+        tracee_pid: u32,
+        tracee_comm: CapturedString,
+    ) -> Self {
+        Self {
+            timestamp,
+            context,
+            tracee_domain,
+            tracee_pid,
+            tracee_comm,
+        }
+    }
+    /// Returns whether the tracee was unsandboxed or in a domain.
+    pub const fn tracee_domain(&self) -> DomainMembership {
+        self.tracee_domain
+    }
+    /// Returns the thread-group ID of the tracee task.
+    pub const fn tracee_pid(&self) -> u32 {
+        self.tracee_pid
+    }
+    /// Returns the captured command name of the tracee task.
+    pub const fn tracee_comm(&self) -> &CapturedString {
+        &self.tracee_comm
+    }
+}
+impl sealed::Sealed for DenyPtraceEvent {}
+impl Observation for DenyPtraceEvent {
+    fn timestamp(&self) -> KernelTimestamp {
+        self.timestamp
+    }
+}
+impl Denial for DenyPtraceEvent {
+    fn context(&self) -> &DenialContext {
+        &self.context
+    }
+}
+
+/// A signal denial.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct DenyScopeSignalEvent {
+    timestamp: KernelTimestamp,
+    context: DenialContext,
+    target_domain: DomainMembership,
+    target_pid: u32,
+    target_comm: CapturedString,
+}
+impl DenyScopeSignalEvent {
+    /// Creates this semantic value from its captured fields.
+    pub fn new(
+        timestamp: KernelTimestamp,
+        context: DenialContext,
+        target_domain: DomainMembership,
+        target_pid: u32,
+        target_comm: CapturedString,
+    ) -> Self {
+        Self {
+            timestamp,
+            context,
+            target_domain,
+            target_pid,
+            target_comm,
+        }
+    }
+    /// Returns whether the target was unsandboxed or in a domain.
+    pub const fn target_domain(&self) -> DomainMembership {
+        self.target_domain
+    }
+    /// Returns the thread-group ID of the target task.
+    pub const fn target_pid(&self) -> u32 {
+        self.target_pid
+    }
+    /// Returns the captured command name of the target task.
+    pub const fn target_comm(&self) -> &CapturedString {
+        &self.target_comm
+    }
+}
+impl sealed::Sealed for DenyScopeSignalEvent {}
+impl Observation for DenyScopeSignalEvent {
+    fn timestamp(&self) -> KernelTimestamp {
+        self.timestamp
+    }
+}
+impl Denial for DenyScopeSignalEvent {
+    fn context(&self) -> &DenialContext {
+        &self.context
+    }
+}
 
 /// An abstract UNIX socket denial.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -874,7 +939,17 @@ impl DenyScopeAbstractUnixSocketEvent {
         self.peer_pid
     }
 }
-denial_common!(DenyScopeAbstractUnixSocketEvent);
+impl sealed::Sealed for DenyScopeAbstractUnixSocketEvent {}
+impl Observation for DenyScopeAbstractUnixSocketEvent {
+    fn timestamp(&self) -> KernelTimestamp {
+        self.timestamp
+    }
+}
+impl Denial for DenyScopeAbstractUnixSocketEvent {
+    fn context(&self) -> &DenialContext {
+        &self.context
+    }
+}
 
 /// A domain destruction event.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -902,7 +977,12 @@ impl FreeDomainEvent {
         self.denial_count
     }
 }
-common_event!(FreeDomainEvent);
+impl sealed::Sealed for FreeDomainEvent {}
+impl Observation for FreeDomainEvent {
+    fn timestamp(&self) -> KernelTimestamp {
+        self.timestamp
+    }
+}
 
 /// A ruleset destruction event.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -934,7 +1014,12 @@ impl FreeRulesetEvent {
         self.ruleset_version
     }
 }
-common_event!(FreeRulesetEvent);
+impl sealed::Sealed for FreeRulesetEvent {}
+impl Observation for FreeRulesetEvent {
+    fn timestamp(&self) -> KernelTimestamp {
+        self.timestamp
+    }
+}
 
 /// A domain enforcement outcome event.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -989,7 +1074,12 @@ impl EnforceDomainEvent {
         self.no_new_privs
     }
 }
-common_event!(EnforceDomainEvent);
+impl sealed::Sealed for EnforceDomainEvent {}
+impl Observation for EnforceDomainEvent {
+    fn timestamp(&self) -> KernelTimestamp {
+        self.timestamp
+    }
+}
 
 /// An event kind not understood by this library.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1011,10 +1101,6 @@ impl UnknownEvent {
             record_length,
         }
     }
-    /// Returns the monotonic kernel timestamp captured for this event.
-    pub const fn timestamp(&self) -> KernelTimestamp {
-        self.timestamp
-    }
     /// Returns the producer's unrecognized numeric event kind.
     pub const fn numeric_kind(&self) -> u8 {
         self.numeric_kind
@@ -1022,6 +1108,12 @@ impl UnknownEvent {
     /// Returns the captured record length carrying the unknown kind.
     pub const fn record_length(&self) -> usize {
         self.record_length
+    }
+}
+impl sealed::Sealed for UnknownEvent {}
+impl Observation for UnknownEvent {
+    fn timestamp(&self) -> KernelTimestamp {
+        self.timestamp
     }
 }
 
@@ -1057,9 +1149,9 @@ pub enum Event {
     Unknown(UnknownEvent),
 }
 
-impl Event {
-    /// Returns the monotonic kernel timestamp captured for this event.
-    pub const fn timestamp(&self) -> KernelTimestamp {
+impl sealed::Sealed for Event {}
+impl Observation for Event {
+    fn timestamp(&self) -> KernelTimestamp {
         match self {
             Self::CreateRuleset(event) => event.timestamp(),
             Self::AddRuleFs(event) => event.timestamp(),

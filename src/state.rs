@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::event::{
-    CapturedString, DenialContext, DomainId, DomainMembership, EnforceDomainEvent, Event,
-    FilesystemAccess, KernelTimestamp, NetworkAccess, RulesetId, ScopeAccess,
+    CapturedString, Denial, DenialContext, DomainId, DomainMembership, EnforceDomainEvent, Event,
+    FilesystemAccess, KernelTimestamp, NetworkAccess, Observation, RulesetId, ScopeAccess,
 };
 
 /// The observed lifecycle of an object.
