@@ -25,14 +25,180 @@ mod bpf {
 use bpf::LandlockObservabilitySkelBuilder;
 
 const DEFAULT_EVENT_CAPACITY: usize = 1024;
+const MIN_EVENT_CAPACITY: usize = 1;
+const MAX_EVENT_CAPACITY: usize = 65_536;
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The reason a collector configuration could not be built.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum CollectorConfigErrorKind {
+    /// The configured event capacity is outside the supported range.
+    InvalidEventCapacity,
+}
+
+/// A failure to build a [`CollectorConfig`].
+///
+/// Configuration failures are reported before any channels, BPF resources, or
+/// worker threads are created.  The configured and accepted capacities remain
+/// available through the accessors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct CollectorConfigError {
+    kind: CollectorConfigErrorKind,
+    configured: usize,
+}
+
+impl CollectorConfigError {
+    /// Returns the reason configuration failed.
+    pub const fn kind(&self) -> CollectorConfigErrorKind {
+        self.kind
+    }
+
+    /// Returns the rejected event capacity.
+    pub const fn configured(&self) -> usize {
+        self.configured
+    }
+
+    /// Returns the minimum accepted event capacity.
+    pub const fn minimum(&self) -> usize {
+        MIN_EVENT_CAPACITY
+    }
+
+    /// Returns the maximum accepted event capacity.
+    pub const fn maximum(&self) -> usize {
+        MAX_EVENT_CAPACITY
+    }
+}
+
+impl fmt::Display for CollectorConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "collector event capacity {} is outside the supported range {}..={}",
+            self.configured, MIN_EVENT_CAPACITY, MAX_EVENT_CAPACITY
+        )
+    }
+}
+
+impl Error for CollectorConfigError {}
+
+/// A builder for an inert [`CollectorConfig`].
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct CollectorConfigBuilder {
+    event_capacity: usize,
+}
+
+impl CollectorConfigBuilder {
+    /// Configures the bounded delivery queue capacity.
+    ///
+    /// Accepted capacities range from 1 through 65,536 entries.
+    pub const fn event_capacity(mut self, event_capacity: usize) -> Self {
+        self.event_capacity = event_capacity;
+        self
+    }
+
+    /// Validates this builder and returns an inert, reusable configuration.
+    ///
+    /// Building does not open or load BPF, allocate channels, or spawn a
+    /// worker thread.
+    pub fn build(self) -> Result<CollectorConfig, CollectorConfigError> {
+        if !(MIN_EVENT_CAPACITY..=MAX_EVENT_CAPACITY).contains(&self.event_capacity) {
+            return Err(CollectorConfigError {
+                kind: CollectorConfigErrorKind::InvalidEventCapacity,
+                configured: self.event_capacity,
+            });
+        }
+        Ok(CollectorConfig {
+            event_capacity: self.event_capacity,
+        })
+    }
+}
+
+impl Default for CollectorConfigBuilder {
+    fn default() -> Self {
+        Self {
+            event_capacity: DEFAULT_EVENT_CAPACITY,
+        }
+    }
+}
+
+/// A validated, inert collector configuration.
+///
+/// This value owns no BPF resources, channels, or threads.  It can be reused
+/// to start multiple independent collectors with [`CollectorConfig::start()`].
+/// Each collector loads its own programs and ring-buffer map and receives its
+/// own event copies; collectors do not distribute one stream across workers.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct CollectorConfig {
+    event_capacity: usize,
+}
+
+impl CollectorConfig {
+    /// Returns a builder with a delivery queue capacity of 1024.
+    pub fn builder() -> CollectorConfigBuilder {
+        CollectorConfigBuilder::default()
+    }
+
+    /// Returns the configured delivery queue capacity.
+    pub const fn event_capacity(&self) -> usize {
+        self.event_capacity
+    }
+
+    /// Starts a collector and waits for synchronous startup to complete.
+    ///
+    /// This may be called repeatedly.  Each call independently opens and loads
+    /// BPF, attaches all programs, creates channels, and spawns a worker.  An
+    /// application that only needs several event processors should normally
+    /// start one collector and fan out decoded events in userspace.
+    pub fn start(&self) -> Result<Collector, CollectorStartError> {
+        let (delivery_tx, delivery_rx) = mpsc::sync_channel(self.event_capacity);
+        let (terminal_tx, terminal_rx) = mpsc::sync_channel(2);
+        let (startup_tx, startup_rx) = mpsc::sync_channel(1);
+        let running = Arc::new(AtomicBool::new(true));
+        let worker_running = Arc::clone(&running);
+        let worker = thread::Builder::new()
+            .name("ll-observe".to_owned())
+            .spawn(move || run_worker(delivery_tx, terminal_tx, worker_running, startup_tx))
+            .map_err(|error| CollectorStartError::new(CollectorStartErrorKind::Spawn, error))?;
+
+        match startup_rx.recv() {
+            Ok(Ok(())) => Ok(Collector {
+                deliveries: delivery_rx,
+                pending_delivery: None,
+                terminal: terminal_rx,
+                running,
+                worker: Some(worker),
+            }),
+            Ok(Err(error)) => {
+                let _ = worker.join();
+                Err(error)
+            }
+            Err(error) => {
+                let _ = worker.join();
+                Err(CollectorStartError::new(
+                    CollectorStartErrorKind::EarlyWorkerStop,
+                    error,
+                ))
+            }
+        }
+    }
+}
+
+impl Default for CollectorConfig {
+    fn default() -> Self {
+        Self {
+            event_capacity: DEFAULT_EVENT_CAPACITY,
+        }
+    }
+}
 
 /// The startup stage at which a collector failed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum CollectorStartErrorKind {
-    /// The requested event capacity was zero.
-    InvalidCapacity,
     /// The private worker thread could not be spawned.
     Spawn,
     /// The embedded BPF object could not be opened.
@@ -50,7 +216,6 @@ pub enum CollectorStartErrorKind {
 impl CollectorStartErrorKind {
     fn description(self) -> &'static str {
         match self {
-            Self::InvalidCapacity => "validate collector event capacity",
             Self::Spawn => "spawn collector worker",
             Self::Open => "open embedded BPF object",
             Self::Load => "load BPF object",
@@ -65,7 +230,7 @@ impl CollectorStartErrorKind {
 ///
 /// Use [`CollectorStartError::kind()`] to identify the startup stage.
 /// Underlying spawning and libbpf errors remain available through
-/// [`Error::source()`]; source-less validation failures retain a static detail.
+/// [`Error::source()`].
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct CollectorStartError {
@@ -78,13 +243,6 @@ impl CollectorStartError {
         Self {
             kind,
             detail: ErrorDetail::Source(Box::new(source)),
-        }
-    }
-
-    fn with_static_detail(kind: CollectorStartErrorKind, detail: &'static str) -> Self {
-        Self {
-            kind,
-            detail: ErrorDetail::Static(detail),
         }
     }
 
@@ -313,62 +471,6 @@ pub struct Collector {
 }
 
 impl Collector {
-    /// Creates a collector with a bounded capacity of 1024 delivery entries.
-    ///
-    /// This returns only after the BPF object is opened and loaded, all twelve
-    /// programs are attached, and the ring-buffer consumer is ready.
-    pub fn new() -> Result<Self, CollectorStartError> {
-        Self::with_event_capacity(DEFAULT_EVENT_CAPACITY)
-    }
-
-    /// Creates a collector with the specified bounded delivery capacity.
-    ///
-    /// `event_capacity` bounds event-bearing and non-terminal-error delivery
-    /// queue entries.  A coalesced output-full notification is control metadata
-    /// paired with the next accepted delivery and does not occupy a separate
-    /// queue entry.  Zero is rejected synchronously before attempting to spawn
-    /// the worker.  Startup returns only after open, load, attach, and
-    /// ring-buffer setup complete.
-    pub fn with_event_capacity(event_capacity: usize) -> Result<Self, CollectorStartError> {
-        if event_capacity == 0 {
-            return Err(CollectorStartError::with_static_detail(
-                CollectorStartErrorKind::InvalidCapacity,
-                "event capacity must be greater than zero",
-            ));
-        }
-
-        let (delivery_tx, delivery_rx) = mpsc::sync_channel(event_capacity);
-        let (terminal_tx, terminal_rx) = mpsc::sync_channel(2);
-        let (startup_tx, startup_rx) = mpsc::sync_channel(1);
-        let running = Arc::new(AtomicBool::new(true));
-        let worker_running = Arc::clone(&running);
-        let worker = thread::Builder::new()
-            .name("ll-observe".to_owned())
-            .spawn(move || run_worker(delivery_tx, terminal_tx, worker_running, startup_tx))
-            .map_err(|error| CollectorStartError::new(CollectorStartErrorKind::Spawn, error))?;
-
-        match startup_rx.recv() {
-            Ok(Ok(())) => Ok(Self {
-                deliveries: delivery_rx,
-                pending_delivery: None,
-                terminal: terminal_rx,
-                running,
-                worker: Some(worker),
-            }),
-            Ok(Err(error)) => {
-                let _ = worker.join();
-                Err(error)
-            }
-            Err(error) => {
-                let _ = worker.join();
-                Err(CollectorStartError::new(
-                    CollectorStartErrorKind::EarlyWorkerStop,
-                    error,
-                ))
-            }
-        }
-    }
-
     /// Returns the next event immediately, without waiting.
     ///
     /// [`TryReceiveError::Empty`] means the running collector has no ready
@@ -620,12 +722,33 @@ mod tests {
     }
 
     #[test]
-    fn zero_capacity_is_rejected_before_spawn() {
-        let Err(error) = Collector::with_event_capacity(0) else {
-            panic!()
-        };
-        assert_eq!(error.kind(), CollectorStartErrorKind::InvalidCapacity);
-        assert!(error.source().is_none());
+    fn capacities_are_validated_without_startup() {
+        for capacity in [0, MAX_EVENT_CAPACITY + 1, usize::MAX] {
+            let error = CollectorConfig::builder()
+                .event_capacity(capacity)
+                .build()
+                .unwrap_err();
+            assert_eq!(error.kind(), CollectorConfigErrorKind::InvalidEventCapacity);
+            assert_eq!(error.configured(), capacity);
+            assert_eq!(error.minimum(), 1);
+            assert_eq!(error.maximum(), 65_536);
+            assert!(error.source().is_none());
+        }
+
+        for capacity in [1, MAX_EVENT_CAPACITY] {
+            let config = CollectorConfig::builder()
+                .event_capacity(capacity)
+                .build()
+                .unwrap();
+            assert_eq!(config.event_capacity(), capacity);
+        }
+
+        let config = CollectorConfig::default();
+        assert_eq!(config.event_capacity(), 1024);
+        assert_eq!(
+            CollectorConfig::builder().build().unwrap().event_capacity(),
+            config.event_capacity()
+        );
 
         let spawn = CollectorStartError::new(
             CollectorStartErrorKind::Spawn,

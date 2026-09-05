@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use batch::Batch;
 use landlock_observability::collector::{
-    Collector, CollectorReceiveErrorKind, ReceiveTimeoutError,
+    Collector, CollectorConfig, CollectorReceiveErrorKind, ReceiveTimeoutError,
 };
 
 const RECEIVE_TIMEOUT: Duration = Duration::from_millis(100);
@@ -59,7 +59,7 @@ fn run_batch(mut collector: Collector) -> Result<(), Box<dyn Error>> {
 
 fn run() -> Result<(), Box<dyn Error>> {
     let mode = parse_mode().map_err(io::Error::other)?;
-    let collector = Collector::new()?;
+    let collector = CollectorConfig::default().start()?;
     match mode {
         Mode::Batch => run_batch(collector),
         Mode::Interactive => tui::run(collector),
