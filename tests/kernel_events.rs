@@ -19,7 +19,7 @@ use landlock::{
     Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, RestrictSelfAttr, Ruleset,
     RulesetAttr, RulesetCreatedAttr, Scope, ABI,
 };
-use landlock_observability::collector::Collector;
+use landlock_observability::collector::CollectorConfig;
 use landlock_observability::event::{
     Denial, DenialContext, DomainId, DomainMembership, EnforceDomainEvent, Event, FilesystemAccess,
     NetworkAccess, RulesetId, ScopeAccess,
@@ -403,7 +403,10 @@ fn has_cap_sys_admin() -> Result<bool, Box<dyn Error>> {
 }
 
 fn no_new_privs_tsync_test(no_new_privs: bool) -> Result<(), Box<dyn Error>> {
-    let mut collector = Collector::with_event_capacity(128)?;
+    let mut collector = CollectorConfig::builder()
+        .event_capacity(128)
+        .build()?
+        .start()?;
     let executable = env::current_exe()?;
     let mode = if no_new_privs {
         "nnp-tsync-1"
@@ -598,7 +601,10 @@ fn assert_context(
 }
 
 fn parent_test() -> Result<(), Box<dyn Error>> {
-    let mut collector = Collector::with_event_capacity(4096)?;
+    let mut collector = CollectorConfig::builder()
+        .event_capacity(4096)
+        .build()?
+        .start()?;
     let executable = env::current_exe()?;
     let mut child = Command::new(executable)
         .arg("--ignored")

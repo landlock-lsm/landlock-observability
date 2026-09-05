@@ -268,18 +268,105 @@ impl DenialKey {
     }
 }
 
-/// The error returned when an aggregation capacity is zero.
+/// The reason a denial aggregator could not be built.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-pub struct InvalidCapacityError;
+pub enum DenialAggregatorBuildErrorKind {
+    /// The configured capacity was zero.
+    InvalidCapacity,
+    /// Storage for the configured capacity could not be reserved.
+    Reservation,
+}
 
-impl fmt::Display for InvalidCapacityError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("denial aggregation capacity must be nonzero")
+/// A failure to build a [`DenialAggregator`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct DenialAggregatorBuildError {
+    kind: DenialAggregatorBuildErrorKind,
+    configured: usize,
+    source: Option<std::collections::TryReserveError>,
+}
+
+impl DenialAggregatorBuildError {
+    /// Returns the reason construction failed.
+    pub const fn kind(&self) -> DenialAggregatorBuildErrorKind {
+        self.kind
+    }
+
+    /// Returns the configured capacity that could not be built.
+    pub const fn configured(&self) -> usize {
+        self.configured
     }
 }
 
-impl Error for InvalidCapacityError {}
+impl fmt::Display for DenialAggregatorBuildError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.source {
+            Some(source) => write!(
+                formatter,
+                "failed to reserve denial aggregation capacity {}: {source}",
+                self.configured
+            ),
+            None => formatter.write_str("denial aggregation capacity must be nonzero"),
+        }
+    }
+}
+
+impl Error for DenialAggregatorBuildError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.source
+            .as_ref()
+            .map(|source| source as &(dyn Error + 'static))
+    }
+}
+
+/// A builder for a [`DenialAggregator`].
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct DenialAggregatorBuilder {
+    capacity: usize,
+}
+
+impl DenialAggregatorBuilder {
+    /// Configures the exact maximum number of retained denial keys.
+    pub const fn capacity(mut self, capacity: usize) -> Self {
+        self.capacity = capacity;
+        self
+    }
+
+    /// Validates the capacity and reserves its map storage.
+    pub fn build(self) -> Result<DenialAggregator, DenialAggregatorBuildError> {
+        if self.capacity == 0 {
+            return Err(DenialAggregatorBuildError {
+                kind: DenialAggregatorBuildErrorKind::InvalidCapacity,
+                configured: self.capacity,
+                source: None,
+            });
+        }
+
+        let mut entries = HashMap::new();
+        entries
+            .try_reserve(self.capacity)
+            .map_err(|source| DenialAggregatorBuildError {
+                kind: DenialAggregatorBuildErrorKind::Reservation,
+                configured: self.capacity,
+                source: Some(source),
+            })?;
+        Ok(DenialAggregator {
+            capacity: self.capacity,
+            entries,
+            ingestion_sequence: 0,
+        })
+    }
+}
+
+impl Default for DenialAggregatorBuilder {
+    fn default() -> Self {
+        Self {
+            capacity: DEFAULT_CAPACITY,
+        }
+    }
+}
 
 /// A locally aggregated denial and its latest observed event.
 #[derive(Debug)]
@@ -354,6 +441,9 @@ pub struct DenialAggregator {
 
 impl DenialAggregator {
     /// Creates an empty aggregator with capacity 1000.
+    ///
+    /// This infallible default does not allocate storage.  Use
+    /// [`DenialAggregator::builder()`] to reserve storage during construction.
     pub fn new() -> Self {
         Self {
             capacity: DEFAULT_CAPACITY,
@@ -362,16 +452,9 @@ impl DenialAggregator {
         }
     }
 
-    /// Creates an empty aggregator with the exact nonzero `capacity`.
-    pub fn with_capacity(capacity: usize) -> Result<Self, InvalidCapacityError> {
-        if capacity == 0 {
-            return Err(InvalidCapacityError);
-        }
-        Ok(Self {
-            capacity,
-            entries: HashMap::with_capacity(capacity),
-            ingestion_sequence: 0,
-        })
+    /// Returns a builder configured with capacity 1000.
+    pub fn builder() -> DenialAggregatorBuilder {
+        DenialAggregatorBuilder::default()
     }
 
     /// Observes an event, aggregating it when it is a concrete denial.
@@ -851,16 +934,23 @@ mod tests {
 
     #[test]
     fn capacity_is_checked_and_exact() {
+        let invalid = DenialAggregator::builder().capacity(0).build().unwrap_err();
         assert_eq!(
-            DenialAggregator::with_capacity(0).unwrap_err(),
-            InvalidCapacityError
+            invalid.kind(),
+            DenialAggregatorBuildErrorKind::InvalidCapacity
         );
+        assert_eq!(invalid.configured(), 0);
         assert_eq!(
-            InvalidCapacityError.to_string(),
+            invalid.to_string(),
             "denial aggregation capacity must be nonzero"
         );
+        assert!(invalid.source().is_none());
+        assert_eq!(
+            DenialAggregator::builder().build().unwrap().capacity(),
+            1000
+        );
 
-        let mut aggregator = DenialAggregator::with_capacity(1).unwrap();
+        let mut aggregator = DenialAggregator::builder().capacity(1).build().unwrap();
         assert_eq!(aggregator.capacity(), 1);
         aggregator.observe(&fs(1, 1, 1, 1, (1, 1, b"/a"), (false, false)));
         aggregator.observe(&fs(1, 2, 1, 1, (1, 1, b"/b"), (false, false)));
@@ -869,6 +959,17 @@ mod tests {
             aggregator.entries().next().unwrap().key().domain_id(),
             DomainId::new(MIN_LANDLOCK_ID + 2).unwrap()
         );
+    }
+
+    #[test]
+    fn reservation_failure_is_structured_and_retains_its_source() {
+        let error = DenialAggregator::builder()
+            .capacity(usize::MAX)
+            .build()
+            .unwrap_err();
+        assert_eq!(error.kind(), DenialAggregatorBuildErrorKind::Reservation);
+        assert_eq!(error.configured(), usize::MAX);
+        assert!(error.source().is_some());
     }
 
     #[test]
@@ -888,7 +989,7 @@ mod tests {
             1,
             1,
         ));
-        let mut aggregator = DenialAggregator::with_capacity(2).unwrap();
+        let mut aggregator = DenialAggregator::builder().capacity(2).build().unwrap();
         aggregator.observe(&first);
         aggregator.observe(&second);
         aggregator
@@ -931,7 +1032,7 @@ mod tests {
             1,
             1,
         ));
-        let mut aggregator = DenialAggregator::with_capacity(2).unwrap();
+        let mut aggregator = DenialAggregator::builder().capacity(2).build().unwrap();
         aggregator.observe(&first);
         aggregator.observe(&second);
         aggregator.observe(&first);

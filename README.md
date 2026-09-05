@@ -125,11 +125,16 @@ each occurrence, with no cross-program ordering guarantee.  Multiple collectors
 therefore receive independent event copies and multiply kernel execution,
 memory, links, file descriptors, and independently bounded loss.
 
-`Collector::new()` and `Collector::with_event_capacity()` report startup errors
-synchronously.  A successful return means the embedded object was opened and
-loaded, all programs were attached, and the ring-buffer consumer was created.
-The error kind identifies whether validation, worker spawning, object opening,
-loading, attachment, ring setup, or an early worker stop failed.
+`CollectorConfig::default()` returns an inert, reusable configuration without
+loading BPF, allocating channels, or spawning a thread.  Use
+`CollectorConfig::builder()` to validate a customized configuration.
+`CollectorConfig::start()` reports startup errors synchronously.  A successful
+return means the embedded object was opened and loaded, all programs were
+attached, and the ring-buffer consumer was created.  Reusing one configuration
+starts independent collectors rather than distributing one event stream across
+a worker pool.  Configuration errors are separate from startup errors, whose
+kind identifies worker spawning, object opening, loading, attachment, ring
+setup, or an early worker stop.
 
 The collector has a bounded queue and its BPF ring-buffer callback never blocks
 waiting for userspace.  `event_capacity` bounds event-bearing and
@@ -193,12 +198,12 @@ Live collection is privileged as described under **Runtime requirements**; the
 following example does not imply that an unprivileged process can start it:
 
 ```no_run
-use landlock_observability::collector::Collector;
+use landlock_observability::collector::CollectorConfig;
 use std::error::Error;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut collector = Collector::new()?;
+    let mut collector = CollectorConfig::default().start()?;
     let event = collector.recv_timeout(Duration::from_secs(1))?;
     println!("{event:?}");
     Ok(())

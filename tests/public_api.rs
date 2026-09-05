@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use landlock_observability::collector::{
-    CollectorReceiveErrorKind, ReceiveTimeoutError, TryReceiveError,
+    CollectorConfig, CollectorReceiveErrorKind, ReceiveTimeoutError, TryReceiveError,
 };
 use landlock_observability::event::{
     DomainId, DomainMembership, EnforceDomainEvent, Event, KernelTimestamp, RulesetId,
@@ -46,6 +46,16 @@ fn timeout_kind(error: ReceiveTimeoutError) -> Option<CollectorReceiveErrorKind>
         ReceiveTimeoutError::Collector(error) => Some(error.kind()),
         _ => None,
     }
+}
+
+#[test]
+fn collector_configuration_has_an_inert_default() {
+    let default = CollectorConfig::default();
+    assert_eq!(default.event_capacity(), 1024);
+    assert_eq!(
+        CollectorConfig::builder().build().unwrap().event_capacity(),
+        default.event_capacity()
+    );
 }
 
 #[test]
