@@ -206,6 +206,9 @@ mod tests {
             CollectorReceiveErrorKind::PollFailure
         )));
         assert!(!recoverable_collector_error(Some(
+            CollectorReceiveErrorKind::WorkerPanic
+        )));
+        assert!(!recoverable_collector_error(Some(
             CollectorReceiveErrorKind::WorkerStop
         )));
         assert!(!recoverable_collector_error(None));

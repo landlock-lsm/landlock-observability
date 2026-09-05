@@ -47,9 +47,9 @@ fn run_batch(mut collector: Collector) -> Result<(), Box<dyn Error>> {
                 | CollectorReceiveErrorKind::MalformedSample => {
                     eprintln!("lltop: warning: {error}")
                 }
-                CollectorReceiveErrorKind::PollFailure | CollectorReceiveErrorKind::WorkerStop => {
-                    return Err(Box::new(error))
-                }
+                CollectorReceiveErrorKind::PollFailure
+                | CollectorReceiveErrorKind::WorkerPanic
+                | CollectorReceiveErrorKind::WorkerStop => return Err(Box::new(error)),
                 _ => return Err(Box::new(error)),
             },
             Err(_) => return Err("unknown collector timeout error".into()),
