@@ -8,53 +8,195 @@ mod string;
 pub use string::{CapturedString, CapturedStringError};
 
 use access_names::{FILESYSTEM_ACCESS_NAMES, NETWORK_ACCESS_NAMES, SCOPE_NAMES};
+use std::cmp::Ordering;
+use std::error::Error;
+use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
+use std::num::NonZeroU64;
 
-/// An ID assigned by the kernel to a Landlock ruleset.
+/// The inclusive minimum ID assigned by the kernel to a Landlock ruleset or domain.
+pub const MIN_LANDLOCK_ID: u64 = 0x1_0000_0000;
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A supported kind of kernel-assigned Landlock ID.
 ///
-/// Kernel-assigned ruleset IDs are nonzero.  Synthetic events are expected to
-/// preserve that invariant.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
-pub struct RulesetId(u64);
+/// This trait is sealed and cannot be implemented outside this crate.
+pub trait LandlockIdKind: sealed::Sealed {
+    /// The kind-specific type name used to format an ID for debugging.
+    const DEBUG_NAME: &'static str;
+}
 
-impl RulesetId {
-    /// Creates a ruleset ID from a caller-supplied kernel value.
-    ///
-    /// This constructor does not validate synthetic input; callers are expected
-    /// to provide a nonzero ID.
-    pub const fn new(value: u64) -> Self {
-        Self(value)
+/// The marker kind for a Landlock domain ID.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Domain;
+
+impl sealed::Sealed for Domain {}
+impl LandlockIdKind for Domain {
+    const DEBUG_NAME: &'static str = "DomainId";
+}
+
+/// The marker kind for a Landlock ruleset ID.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Ruleset;
+
+impl sealed::Sealed for Ruleset {}
+impl LandlockIdKind for Ruleset {
+    const DEBUG_NAME: &'static str = "RulesetId";
+}
+
+/// An invalid kernel-assigned Landlock ID.
+///
+/// Linux allocates ruleset and domain IDs from a shared counter whose minimum
+/// possible value is [`MIN_LANDLOCK_ID`]. Every smaller value is invalid;
+/// notably, zero is reserved for an absent or unsandboxed domain relationship.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct InvalidLandlockIdError {
+    value: u64,
+}
+
+impl InvalidLandlockIdError {
+    /// Returns the rejected value.
+    pub const fn value(self) -> u64 {
+        self.value
+    }
+
+    /// Returns the inclusive minimum valid value.
+    pub const fn minimum(self) -> u64 {
+        MIN_LANDLOCK_ID
+    }
+}
+
+impl fmt::Display for InvalidLandlockIdError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "invalid Landlock ID {}, expected at least {}",
+            self.value, MIN_LANDLOCK_ID
+        )
+    }
+}
+
+impl Error for InvalidLandlockIdError {}
+
+/// An ID assigned by the kernel to a Landlock ruleset or domain.
+///
+/// `K` distinguishes the two supported ID kinds at compile time. Values are at
+/// least [`MIN_LANDLOCK_ID`].
+#[non_exhaustive]
+pub struct LandlockId<K: LandlockIdKind> {
+    value: NonZeroU64,
+    kind: PhantomData<fn() -> K>,
+}
+
+impl<K: LandlockIdKind> LandlockId<K> {
+    /// Creates an ID from a kernel-assigned value.
+    pub const fn new(value: u64) -> Result<Self, InvalidLandlockIdError> {
+        if value < MIN_LANDLOCK_ID {
+            return Err(InvalidLandlockIdError { value });
+        }
+        let value = NonZeroU64::new(value).expect("a valid Landlock ID must be nonzero");
+        Ok(Self {
+            value,
+            kind: PhantomData,
+        })
     }
 
     /// Returns the kernel-assigned ID.
     pub const fn get(self) -> u64 {
-        self.0
+        self.value.get()
+    }
+}
+
+impl<K: LandlockIdKind> TryFrom<u64> for LandlockId<K> {
+    type Error = InvalidLandlockIdError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl<K: LandlockIdKind> From<LandlockId<K>> for u64 {
+    fn from(value: LandlockId<K>) -> Self {
+        value.get()
+    }
+}
+
+impl<K: LandlockIdKind> Clone for LandlockId<K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<K: LandlockIdKind> Copy for LandlockId<K> {}
+
+impl fmt::Display for LandlockId<Domain> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{:x}", self.get())
+    }
+}
+
+impl<K: LandlockIdKind> fmt::Debug for LandlockId<K> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple(K::DEBUG_NAME)
+            .field(&self.get())
+            .finish()
+    }
+}
+
+impl<K: LandlockIdKind> PartialEq for LandlockId<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl<K: LandlockIdKind> Eq for LandlockId<K> {}
+
+impl<K: LandlockIdKind> PartialOrd for LandlockId<K> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<K: LandlockIdKind> Ord for LandlockId<K> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.value.cmp(&other.value)
+    }
+}
+
+impl<K: LandlockIdKind> Hash for LandlockId<K> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.value.hash(state);
     }
 }
 
 /// An ID assigned by the kernel to a Landlock domain.
 ///
-/// Kernel-assigned domain IDs are nonzero.  A zero value represents the absence
-/// of a domain in relationships and must not be wrapped in this type by
-/// synthetic event producers.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
-pub struct DomainId(u64);
+/// [`Display`](fmt::Display) follows the kernel's lowercase hexadecimal
+/// representation without `0x` or padding. Formatting flags are ignored to
+/// keep this representation canonical.
+pub type DomainId = LandlockId<Domain>;
 
-impl DomainId {
-    /// Creates a domain ID from a caller-supplied kernel value.
-    ///
-    /// This constructor does not validate synthetic input; callers are expected
-    /// to provide a nonzero ID.
-    pub const fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    /// Returns the kernel-assigned ID.
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
+/// An ID assigned by the kernel to a Landlock ruleset.
+///
+/// A bare ruleset ID intentionally does not implement [`Display`](fmt::Display)
+/// because a complete ruleset reference also requires its version. Use
+/// [`RulesetVersion`](crate::state::RulesetVersion) for display.
+///
+/// ```compile_fail
+/// use landlock_observability::event::{RulesetId, MIN_LANDLOCK_ID};
+///
+/// let id = RulesetId::new(MIN_LANDLOCK_ID).unwrap();
+/// let _ = format!("{id}");
+/// ```
+pub type RulesetId = LandlockId<Ruleset>;
 
 /// A monotonic timestamp captured by the kernel, in nanoseconds.
 ///
@@ -157,7 +299,16 @@ access_type!(ScopeAccess, ScopeAccessName, SCOPE_NAMES, "scope mask.");
 /// Whether the other party was unsandboxed or belonged to a Landlock domain.
 ///
 /// A complete event field is either the kernel's zero sentinel or one nonzero
-/// domain ID, so these variants exhaust the possible membership states.
+/// domain ID, so these variants exhaust the possible membership states. This
+/// type intentionally does not implement [`Display`](fmt::Display) because
+/// consumers represent the unsandboxed state differently.
+///
+/// ```compile_fail
+/// use landlock_observability::event::DomainMembership;
+///
+/// let membership = DomainMembership::Unsandboxed;
+/// let _ = format!("{membership}");
+/// ```
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum DomainMembership {
     /// The other party was unsandboxed at the decision point.
@@ -173,6 +324,21 @@ impl DomainMembership {
             Self::Unsandboxed => None,
             Self::Sandboxed(id) => Some(id),
         }
+    }
+}
+
+impl From<Option<DomainId>> for DomainMembership {
+    fn from(value: Option<DomainId>) -> Self {
+        match value {
+            Some(id) => Self::Sandboxed(id),
+            None => Self::Unsandboxed,
+        }
+    }
+}
+
+impl From<DomainMembership> for Option<DomainId> {
+    fn from(value: DomainMembership) -> Self {
+        value.domain_id()
     }
 }
 
@@ -943,14 +1109,47 @@ mod tests {
     }
 
     #[test]
-    fn scalar_public_constructors() {
-        assert_eq!(RulesetId::new(7).get(), 7);
-        assert_eq!(DomainId::new(9).get(), 9);
-        assert_eq!(KernelTimestamp::from_nanoseconds(11).as_nanoseconds(), 11);
-        assert_eq!(DomainMembership::Unsandboxed.domain_id(), None);
+    fn landlock_id_boundaries_and_conversions() {
+        for value in [0, 1, u32::MAX as u64] {
+            let error = DomainId::new(value).unwrap_err();
+            assert_eq!(error.value(), value);
+            assert_eq!(error.minimum(), MIN_LANDLOCK_ID);
+            assert_eq!(DomainId::try_from(value), Err(error));
+        }
+
+        let minimum = DomainId::new(MIN_LANDLOCK_ID).unwrap();
+        let maximum = DomainId::try_from(u64::MAX).unwrap();
+        assert_eq!(minimum.get(), MIN_LANDLOCK_ID);
+        assert_eq!(u64::from(maximum), u64::MAX);
+        assert!(minimum < maximum);
+        assert_eq!(minimum.to_string(), "100000000");
+        assert_eq!(maximum.to_string(), "ffffffffffffffff");
+        assert_eq!(format!("{minimum:#020}"), "100000000");
+        assert_eq!(format!("{minimum:*>20}"), "100000000");
+        assert_eq!(format!("{minimum:?}"), "DomainId(4294967296)");
         assert_eq!(
-            DomainMembership::Sandboxed(DomainId::new(9)).domain_id(),
-            Some(DomainId::new(9))
+            DomainId::new(u32::MAX as u64).unwrap_err().to_string(),
+            "invalid Landlock ID 4294967295, expected at least 4294967296"
         );
+
+        let ruleset = RulesetId::new(MIN_LANDLOCK_ID).unwrap();
+        assert_eq!(ruleset.get(), minimum.get());
+        assert_eq!(format!("{ruleset:?}"), "RulesetId(4294967296)");
+    }
+
+    #[test]
+    fn domain_membership_option_conversions_are_total() {
+        let id = DomainId::new(MIN_LANDLOCK_ID).unwrap();
+        assert_eq!(DomainMembership::from(None), DomainMembership::Unsandboxed);
+        assert_eq!(DomainMembership::from(Some(id)).domain_id(), Some(id));
+        assert_eq!(
+            Option::<DomainId>::from(DomainMembership::Unsandboxed),
+            None
+        );
+        assert_eq!(
+            Option::<DomainId>::from(DomainMembership::Sandboxed(id)),
+            Some(id)
+        );
+        assert_eq!(KernelTimestamp::from_nanoseconds(11).as_nanoseconds(), 11);
     }
 }

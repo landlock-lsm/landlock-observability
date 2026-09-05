@@ -13,6 +13,7 @@
 //! `State`.
 
 use std::collections::HashMap;
+use std::fmt;
 
 use crate::event::{
     CapturedString, DenialContext, DomainId, DomainMembership, EnforceDomainEvent, Event,
@@ -51,6 +52,10 @@ pub enum DomainParent {
 }
 
 /// A ruleset identity paired with a particular version.
+///
+/// [`Display`](fmt::Display) follows the kernel's lowercase hexadecimal ID and
+/// decimal version representation without `0x` or padding. Formatting flags
+/// are ignored to keep this representation canonical.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct RulesetVersion {
@@ -75,6 +80,17 @@ impl RulesetVersion {
     /// Returns the ruleset version.
     pub const fn ruleset_version(self) -> u32 {
         self.ruleset_version
+    }
+}
+
+impl fmt::Display for RulesetVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{:x}.{}",
+            self.ruleset_id.get(),
+            self.ruleset_version
+        )
     }
 }
 
@@ -698,7 +714,7 @@ mod tests {
         AddRuleFsEvent, AddRuleNetEvent, CreateDomainEvent, CreateRulesetEvent, DenyAccessFsEvent,
         DenyAccessNetEvent, DenyPtraceEvent, DenyScopeAbstractUnixSocketEvent,
         DenyScopeSignalEvent, EnforceDomainEvent, FreeDomainEvent, FreeRulesetEvent,
-        HierarchySnapshot, UnknownEvent,
+        HierarchySnapshot, UnknownEvent, MIN_LANDLOCK_ID,
     };
 
     fn timestamp(value: u64) -> KernelTimestamp {
@@ -710,14 +726,14 @@ mod tests {
     }
 
     fn hierarchy(
-        domain: u64,
-        parent: Option<u64>,
+        domain_offset: u64,
+        parent_offset: Option<u64>,
         creator_tgid: u32,
         creator_comm: &[u8],
     ) -> HierarchySnapshot {
         HierarchySnapshot::new(
-            DomainId::new(domain),
-            parent.map(DomainId::new),
+            DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap(),
+            parent_offset.map(|offset| DomainId::new(MIN_LANDLOCK_ID + offset).unwrap()),
             creator_tgid,
             string(creator_comm),
         )
@@ -738,7 +754,7 @@ mod tests {
             &mut state,
             Event::CreateRuleset(CreateRulesetEvent::new(
                 timestamp(10),
-                RulesetId::new(7),
+                RulesetId::new(MIN_LANDLOCK_ID + 7).unwrap(),
                 0,
                 FilesystemAccess::from_bits(0x8000_0001),
                 NetworkAccess::from_bits(0x8000_0002),
@@ -746,14 +762,25 @@ mod tests {
             )),
         );
 
-        let ruleset = state.ruleset(RulesetId::new(7)).unwrap();
-        assert_eq!(ruleset.ruleset_id(), RulesetId::new(7));
+        let ruleset = state
+            .ruleset(RulesetId::new(MIN_LANDLOCK_ID + 7).unwrap())
+            .unwrap();
+        assert_eq!(
+            ruleset.ruleset_id(),
+            RulesetId::new(MIN_LANDLOCK_ID + 7).unwrap()
+        );
         assert_eq!(ruleset.lifecycle(), LifecycleState::Allocated);
         assert_eq!(ruleset.creation_timestamp(), Some(timestamp(10)));
         assert_eq!(ruleset.max_observed_version(), Some(0));
         assert_eq!(ruleset.handled_fs().unwrap().bits(), 0x8000_0001);
         assert_eq!(ruleset.handled_net().unwrap().bits(), 0x8000_0002);
         assert_eq!(ruleset.scoped().unwrap().bits(), 0x8000_0001);
+        let reference = RulesetVersion::new(ruleset.ruleset_id(), 0);
+        assert_eq!(reference.to_string(), "100000007.0");
+        assert_eq!(format!("{reference:#020}"), "100000007.0");
+        assert_eq!(format!("{reference:*>20}"), "100000007.0");
+        let maximum = RulesetVersion::new(RulesetId::new(u64::MAX).unwrap(), u32::MAX);
+        assert_eq!(maximum.to_string(), "ffffffffffffffff.4294967295");
         assert_eq!(state.ruleset_count(), 1);
         assert_eq!(state.rulesets().count(), 1);
         let default = State::default();
@@ -764,7 +791,7 @@ mod tests {
     #[test]
     fn inferred_rules_merge_by_natural_target_and_versions_are_monotonic() {
         let mut state = State::new();
-        let id = RulesetId::new(8);
+        let id = RulesetId::new(MIN_LANDLOCK_ID + 8).unwrap();
         for event in [
             Event::AddRuleFs(AddRuleFsEvent::new(
                 timestamp(20),
@@ -816,7 +843,7 @@ mod tests {
             )),
             Event::AddRuleNet(AddRuleNetEvent::new(
                 timestamp(50),
-                RulesetId::new(9),
+                RulesetId::new(MIN_LANDLOCK_ID + 9).unwrap(),
                 0,
                 NetworkAccess::from_bits(8),
                 90,
@@ -849,7 +876,9 @@ mod tests {
             0xc000_0003
         );
         assert_eq!(ruleset.network_rule(81).unwrap().access_rights().bits(), 4);
-        let network_only = state.ruleset(RulesetId::new(9)).unwrap();
+        let network_only = state
+            .ruleset(RulesetId::new(MIN_LANDLOCK_ID + 9).unwrap())
+            .unwrap();
         assert_eq!(network_only.lifecycle(), LifecycleState::Allocated);
         assert_eq!(network_only.creation_timestamp(), None);
         assert_eq!(network_only.max_observed_version(), Some(0));
@@ -870,9 +899,9 @@ mod tests {
             &mut state,
             Event::CreateDomain(CreateDomainEvent::new(
                 timestamp(10),
-                RulesetId::new(2),
+                RulesetId::new(MIN_LANDLOCK_ID + 2).unwrap(),
                 3,
-                DomainId::new(4),
+                DomainId::new(MIN_LANDLOCK_ID + 4).unwrap(),
                 None,
                 100,
                 string(b"creator"),
@@ -882,7 +911,7 @@ mod tests {
             &mut state,
             Event::EnforceDomain(EnforceDomainEvent::new(
                 timestamp(11),
-                DomainId::new(5),
+                DomainId::new(MIN_LANDLOCK_ID + 5).unwrap(),
                 101,
                 false,
                 false,
@@ -890,7 +919,9 @@ mod tests {
             )),
         );
 
-        let root = state.domain(DomainId::new(4)).unwrap();
+        let root = state
+            .domain(DomainId::new(MIN_LANDLOCK_ID + 4).unwrap())
+            .unwrap();
         assert_eq!(root.lifecycle(), LifecycleState::Allocated);
         assert_eq!(root.creation_timestamp(), Some(timestamp(10)));
         assert_eq!(root.parent(), Some(DomainParent::Root));
@@ -899,10 +930,19 @@ mod tests {
         assert_eq!(root.creator_comm().unwrap().as_bytes(), b"creator");
         assert_eq!(
             root.ruleset(),
-            Some(RulesetVersion::new(RulesetId::new(2), 3))
+            Some(RulesetVersion::new(
+                RulesetId::new(MIN_LANDLOCK_ID + 2).unwrap(),
+                3
+            ))
         );
         assert_eq!(root.cumulative_denial_count(), Some(0));
-        assert_eq!(state.domain(DomainId::new(5)).unwrap().parent(), None);
+        assert_eq!(
+            state
+                .domain(DomainId::new(MIN_LANDLOCK_ID + 5).unwrap())
+                .unwrap()
+                .parent(),
+            None
+        );
         assert_eq!(state.domain_count(), 2);
         assert_eq!(state.domains().count(), 2);
     }
@@ -910,9 +950,9 @@ mod tests {
     #[test]
     fn non_root_domain_create_materializes_unknown_cross_references() {
         let mut state = State::new();
-        let ruleset_id = RulesetId::new(6);
-        let parent_id = DomainId::new(7);
-        let domain_id = DomainId::new(8);
+        let ruleset_id = RulesetId::new(MIN_LANDLOCK_ID + 6).unwrap();
+        let parent_id = DomainId::new(MIN_LANDLOCK_ID + 7).unwrap();
+        let domain_id = DomainId::new(MIN_LANDLOCK_ID + 8).unwrap();
         apply(
             &mut state,
             Event::CreateDomain(CreateDomainEvent::new(
@@ -953,9 +993,9 @@ mod tests {
     #[test]
     fn domain_create_does_not_reallocate_deallocated_cross_references() {
         let mut state = State::new();
-        let parent_id = DomainId::new(10);
-        let ruleset_id = RulesetId::new(11);
-        let domain_id = DomainId::new(12);
+        let parent_id = DomainId::new(MIN_LANDLOCK_ID + 10).unwrap();
+        let ruleset_id = RulesetId::new(MIN_LANDLOCK_ID + 11).unwrap();
+        let domain_id = DomainId::new(MIN_LANDLOCK_ID + 12).unwrap();
         apply(
             &mut state,
             Event::FreeDomain(FreeDomainEvent::new(timestamp(20), parent_id, 4)),
@@ -998,7 +1038,7 @@ mod tests {
     #[test]
     fn denial_infers_creator_only_from_one_meaningful_pair() {
         let mut state = State::new();
-        let id = DomainId::new(9);
+        let id = DomainId::new(MIN_LANDLOCK_ID + 9).unwrap();
         for snapshot in [hierarchy(9, None, 100, b""), hierarchy(9, None, 0, b"comm")] {
             apply(
                 &mut state,
@@ -1087,21 +1127,29 @@ mod tests {
             )),
         );
 
-        let denying = state.domain(DomainId::new(10)).unwrap();
+        let denying = state
+            .domain(DomainId::new(MIN_LANDLOCK_ID + 10).unwrap())
+            .unwrap();
         assert_eq!(denying.lifecycle(), LifecycleState::Allocated);
         assert_eq!(
             denying.parent(),
-            Some(DomainParent::Domain(DomainId::new(20)))
+            Some(DomainParent::Domain(
+                DomainId::new(MIN_LANDLOCK_ID + 20).unwrap()
+            ))
         );
         assert_eq!(denying.creator_tgid(), None);
         assert_eq!(denying.creator_comm(), None);
         assert_eq!(denying.cumulative_denial_count(), Some(7));
-        let parent = state.domain(DomainId::new(20)).unwrap();
+        let parent = state
+            .domain(DomainId::new(MIN_LANDLOCK_ID + 20).unwrap())
+            .unwrap();
         assert_eq!(parent.lifecycle(), LifecycleState::Unknown);
         assert_eq!(parent.parent(), None);
         assert_eq!(parent.cumulative_denial_count(), None);
         for (id, count) in [(11, 8), (12, 9), (13, 10), (14, 11)] {
-            let domain = state.domain(DomainId::new(id)).unwrap();
+            let domain = state
+                .domain(DomainId::new(MIN_LANDLOCK_ID + id).unwrap())
+                .unwrap();
             assert_eq!(domain.lifecycle(), LifecycleState::Allocated);
             assert_eq!(domain.cumulative_denial_count(), Some(count));
             assert!(domain.creator_tgid().is_some());
@@ -1112,7 +1160,7 @@ mod tests {
     #[test]
     fn late_create_upgrades_inference_without_lowering_count_or_reallocating() {
         let mut state = State::new();
-        let id = DomainId::new(30);
+        let id = DomainId::new(MIN_LANDLOCK_ID + 30).unwrap();
         apply(
             &mut state,
             Event::DenyAccessFs(DenyAccessFsEvent::new(
@@ -1132,7 +1180,7 @@ mod tests {
             &mut state,
             Event::CreateDomain(CreateDomainEvent::new(
                 timestamp(10),
-                RulesetId::new(6),
+                RulesetId::new(MIN_LANDLOCK_ID + 6).unwrap(),
                 7,
                 id,
                 None,
@@ -1149,7 +1197,10 @@ mod tests {
         assert_eq!(domain.creator_comm().unwrap().as_bytes(), b"explicit");
         assert_eq!(
             domain.ruleset(),
-            Some(RulesetVersion::new(RulesetId::new(6), 7))
+            Some(RulesetVersion::new(
+                RulesetId::new(MIN_LANDLOCK_ID + 6).unwrap(),
+                7
+            ))
         );
         assert_eq!(domain.cumulative_denial_count(), Some(50));
     }
@@ -1157,8 +1208,8 @@ mod tests {
     #[test]
     fn unseen_deallocation_tombstones_are_monotonic_and_never_reallocate() {
         let mut state = State::new();
-        let domain_id = DomainId::new(40);
-        let ruleset_id = RulesetId::new(41);
+        let domain_id = DomainId::new(MIN_LANDLOCK_ID + 40).unwrap();
+        let ruleset_id = RulesetId::new(MIN_LANDLOCK_ID + 41).unwrap();
         for event in [
             Event::FreeDomain(FreeDomainEvent::new(timestamp(30), domain_id, 9)),
             Event::FreeDomain(FreeDomainEvent::new(timestamp(20), domain_id, 7)),
@@ -1206,7 +1257,7 @@ mod tests {
     #[test]
     fn enforcement_keeps_latest_per_tid_and_survives_deallocation() {
         let mut state = State::new();
-        let id = DomainId::new(50);
+        let id = DomainId::new(MIN_LANDLOCK_ID + 50).unwrap();
         assert!(state.domain(id).is_none());
         for event in [
             Event::EnforceDomain(EnforceDomainEvent::new(
@@ -1316,7 +1367,7 @@ mod tests {
             Event::DenyPtrace(DenyPtraceEvent::new(
                 timestamp(1),
                 context(hierarchy(60, None, 1, b"one"), 1),
-                DomainMembership::Sandboxed(DomainId::new(61)),
+                DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 61).unwrap()),
                 2,
                 string(b"two"),
             )),
@@ -1332,10 +1383,13 @@ mod tests {
             )),
         );
 
-        let other = state.domain(DomainId::new(61)).unwrap();
+        let other = state
+            .domain(DomainId::new(MIN_LANDLOCK_ID + 61).unwrap())
+            .unwrap();
         assert_eq!(other.lifecycle(), LifecycleState::Unknown);
         assert_eq!(other.cumulative_denial_count(), None);
-        assert!(state.domain(DomainId::new(0)).is_none());
+        // The count proves no zero-sentinel node was created: DomainId cannot represent zero.
+        assert_eq!(state.domain_count(), 3);
     }
 
     #[test]
@@ -1348,7 +1402,7 @@ mod tests {
         assert_eq!(state.ruleset_count(), 0);
         assert_eq!(state.domain_count(), 0);
 
-        let id = RulesetId::new(70);
+        let id = RulesetId::new(MIN_LANDLOCK_ID + 70).unwrap();
         let create = Event::CreateRuleset(CreateRulesetEvent::new(
             timestamp(2),
             id,

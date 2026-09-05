@@ -1,18 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use landlock_observability::event::{
-    CapturedString, FilesystemAccess, KernelTimestamp, NetworkAccess, ScopeAccess,
+    CapturedString, FilesystemAccess, KernelTimestamp, NetworkAccess, RulesetId, ScopeAccess,
 };
+use landlock_observability::state::RulesetVersion;
 use ratatui::text::Span;
 
-pub(super) fn hex_id(value: u64) -> String {
-    format!("{value:x}")
-}
-
-pub(super) fn ruleset(id: u64, version: Option<u32>) -> String {
+pub(super) fn ruleset(id: RulesetId, version: Option<u32>) -> String {
     version.map_or_else(
-        || format!("{}.?", hex_id(id)),
-        |v| format!("{}.{v}", hex_id(id)),
+        || format!("{:x}.?", id.get()),
+        |version| RulesetVersion::new(id, version).to_string(),
     )
 }
 

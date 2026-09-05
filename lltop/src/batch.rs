@@ -6,7 +6,9 @@ use landlock_observability::aggregate::{AggregatedDenial, DenialAggregator};
 use landlock_observability::event::{
     CapturedString, DomainId, DomainMembership, Event, FilesystemAccess, NetworkAccess, RulesetId,
 };
-use landlock_observability::state::{DomainParent, DomainState, LifecycleState, State};
+use landlock_observability::state::{
+    DomainParent, DomainState, LifecycleState, RulesetVersion, State,
+};
 
 const DENIAL_KIND_COUNT: usize = 5;
 
@@ -161,8 +163,8 @@ impl Batch {
         if let Some((id, previous)) = deallocated_ruleset {
             let current = deallocated_ruleset_identity(&self.state, id);
             if current != previous {
-                if let Some((id, version)) = current {
-                    records.push(format!("DROP_RULESET ruleset={}", ruleset(id, version)));
+                if let Some(ruleset) = current {
+                    records.push(format!("DROP_RULESET ruleset={ruleset}"));
                 }
             }
         }
@@ -257,32 +259,25 @@ fn affected_domain_ids(event: &Event) -> Vec<DomainId> {
     ids
 }
 
-fn deallocated_ruleset_identity(state: &State, id: RulesetId) -> Option<(RulesetId, u32)> {
+fn deallocated_ruleset_identity(state: &State, id: RulesetId) -> Option<RulesetVersion> {
     let ruleset = state.ruleset(id)?;
     if ruleset.lifecycle() != LifecycleState::Deallocated {
         return None;
     }
-    ruleset.final_version().map(|version| (id, version))
-}
-
-fn hex_id(value: u64) -> String {
-    format!("{value:x}")
-}
-
-fn ruleset(id: RulesetId, version: u32) -> String {
-    format!("{}.{version}", hex_id(id.get()))
+    ruleset
+        .final_version()
+        .map(|version| RulesetVersion::new(id, version))
 }
 
 fn format_domain(domain: &DomainState) -> String {
     let parent = match domain.parent() {
         None => "?".to_owned(),
         Some(DomainParent::Root) => "0".to_owned(),
-        Some(DomainParent::Domain(id)) => hex_id(id.get()),
+        Some(DomainParent::Domain(id)) => id.to_string(),
     };
-    let ruleset = domain.ruleset().map_or_else(
-        || "?".to_owned(),
-        |value| ruleset(value.ruleset_id(), value.ruleset_version()),
-    );
+    let ruleset = domain
+        .ruleset()
+        .map_or_else(|| "?".to_owned(), |value| value.to_string());
     let creator = match (domain.creator_comm(), domain.creator_tgid()) {
         (Some(comm), Some(tgid)) => format!("{}[{tgid}]", escape(comm)),
         _ => "?".to_owned(),
@@ -292,7 +287,7 @@ fn format_domain(domain: &DomainState) -> String {
         .map_or("?", |value| if value { "1" } else { "0" });
     format!(
         "DOMAIN domain={} parent={parent} ruleset={ruleset} creator={creator} no_new_privs={no_new_privs}",
-        hex_id(domain.domain_id().get())
+        domain.domain_id()
     )
 }
 
@@ -341,8 +336,11 @@ fn access_blockers<'a>(
     }
 }
 
-fn domain_membership(value: DomainMembership) -> u64 {
-    value.domain_id().map_or(0, DomainId::get)
+fn domain_membership(value: DomainMembership) -> String {
+    match value {
+        DomainMembership::Unsandboxed => "0".to_owned(),
+        DomainMembership::Sandboxed(id) => id.to_string(),
+    }
 }
 
 fn elapsed(first_ns: u64, latest_ns: u64) -> String {
@@ -408,12 +406,12 @@ fn format_denial(kind: DenialKind, denial: &AggregatedDenial) -> String {
         _ => unreachable!("an aggregated denial contains a denial event"),
     };
     let relation = relation.map_or_else(String::new, |(label, membership)| {
-        format!(" {label}={}", hex_id(domain_membership(membership)))
+        format!(" {label}={}", domain_membership(membership))
     });
     format!(
         "DENIAL type={} domain={} blockers={blockers} target={target} count={} age={} same_exec={} logged={}{}",
         kind.label(),
-        hex_id(domain.get()),
+        domain,
         denial.occurrence_count(),
         elapsed(
             denial.first_timestamp().as_nanoseconds(),
@@ -453,6 +451,7 @@ mod tests {
         CreateDomainEvent, DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
         DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, EnforceDomainEvent,
         FreeDomainEvent, FreeRulesetEvent, HierarchySnapshot, KernelTimestamp, UnknownEvent,
+        MIN_LANDLOCK_ID,
     };
 
     fn timestamp(seconds: u64) -> KernelTimestamp {
@@ -463,11 +462,11 @@ mod tests {
         CapturedString::new(bytes.to_vec(), false).unwrap()
     }
 
-    fn context(domain: u64, parent: Option<u64>, count: u64) -> DenialContext {
+    fn context(domain_offset: u64, parent_offset: Option<u64>, count: u64) -> DenialContext {
         DenialContext::new(
             HierarchySnapshot::new(
-                DomainId::new(domain),
-                parent.map(DomainId::new),
+                DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap(),
+                parent_offset.map(|offset| DomainId::new(MIN_LANDLOCK_ID + offset).unwrap()),
                 10,
                 captured(b"creator"),
             ),
@@ -492,9 +491,9 @@ mod tests {
     fn lifecycle_records_are_identity_deduplicated_and_accept_late_objects() {
         let create = Event::CreateDomain(CreateDomainEvent::new(
             timestamp(1),
-            RulesetId::new(0x20),
+            RulesetId::new(MIN_LANDLOCK_ID + 0x20).unwrap(),
             3,
-            DomainId::new(0x10),
+            DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap(),
             None,
             42,
             captured(b"shell"),
@@ -503,7 +502,7 @@ mod tests {
         assert_eq!(
             batch.process(&create),
             [
-                "DOMAIN domain=10 parent=0 ruleset=20.3 creator=shell[42] no_new_privs=?",
+                "DOMAIN domain=100000010 parent=0 ruleset=100000020.3 creator=shell[42] no_new_privs=?",
                 "STATS domains=1/1 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
             ]
         );
@@ -511,40 +510,46 @@ mod tests {
 
         let late_create = Event::CreateDomain(CreateDomainEvent::new(
             timestamp(2),
-            RulesetId::new(0x30),
+            RulesetId::new(MIN_LANDLOCK_ID + 0x30).unwrap(),
             4,
-            DomainId::new(0x10),
-            Some(DomainId::new(0x11)),
+            DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap(),
+            Some(DomainId::new(MIN_LANDLOCK_ID + 0x11).unwrap()),
             43,
             captured(b"upgraded"),
         ));
         assert_eq!(
             batch.process(&late_create),
             [
-                "DOMAIN domain=10 parent=11 ruleset=30.4 creator=upgraded[43] no_new_privs=?",
-                "DOMAIN domain=11 parent=? ruleset=? creator=? no_new_privs=?",
+                "DOMAIN domain=100000010 parent=100000011 ruleset=100000030.4 creator=upgraded[43] no_new_privs=?",
+                "DOMAIN domain=100000011 parent=? ruleset=? creator=? no_new_privs=?",
                 "STATS domains=1/2 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
             ]
         );
         assert!(batch.process(&late_create).is_empty());
 
-        let late_free =
-            Event::FreeRuleset(FreeRulesetEvent::new(timestamp(2), RulesetId::new(0xab), 7));
+        let late_free = Event::FreeRuleset(FreeRulesetEvent::new(
+            timestamp(2),
+            RulesetId::new(MIN_LANDLOCK_ID + 0xab).unwrap(),
+            7,
+        ));
         assert_eq!(
             batch.process(&late_free),
             [
-                "DROP_RULESET ruleset=ab.7",
+                "DROP_RULESET ruleset=1000000ab.7",
                 "STATS domains=1/2 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
             ]
         );
         assert!(batch.process(&late_free).is_empty());
 
-        let late_domain =
-            Event::FreeDomain(FreeDomainEvent::new(timestamp(3), DomainId::new(0xcd), 0));
+        let late_domain = Event::FreeDomain(FreeDomainEvent::new(
+            timestamp(3),
+            DomainId::new(MIN_LANDLOCK_ID + 0xcd).unwrap(),
+            0,
+        ));
         assert_eq!(
             batch.process(&late_domain),
             [
-                "DOMAIN domain=cd parent=? ruleset=? creator=? no_new_privs=?",
+                "DOMAIN domain=1000000cd parent=? ruleset=? creator=? no_new_privs=?",
                 "STATS domains=1/3 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
             ]
         );
@@ -553,7 +558,7 @@ mod tests {
     #[test]
     fn enforcement_reports_weakest_observed_no_new_privs_fact() {
         let mut batch = Batch::new();
-        let id = DomainId::new(0x10);
+        let id = DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap();
         let first = Event::EnforceDomain(EnforceDomainEvent::new(
             timestamp(1),
             id,
@@ -581,21 +586,21 @@ mod tests {
         assert_eq!(
             batch.process(&first),
             [
-                "DOMAIN domain=10 parent=? ruleset=? creator=? no_new_privs=1",
+                "DOMAIN domain=100000010 parent=? ruleset=? creator=? no_new_privs=1",
                 "STATS domains=1/1 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
             ]
         );
         assert_eq!(
             batch.process(&weakest),
             [
-                "DOMAIN domain=10 parent=? ruleset=? creator=? no_new_privs=0",
+                "DOMAIN domain=100000010 parent=? ruleset=? creator=? no_new_privs=0",
                 "STATS domains=1/1 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
             ]
         );
         assert_eq!(
             batch.process(&updated),
             [
-                "DOMAIN domain=10 parent=? ruleset=? creator=? no_new_privs=1",
+                "DOMAIN domain=100000010 parent=? ruleset=? creator=? no_new_privs=1",
                 "STATS domains=1/1 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
             ]
         );
@@ -622,7 +627,7 @@ mod tests {
             Event::DenyScopeSignal(DenyScopeSignalEvent::new(
                 timestamp(4),
                 context(0x10, None, 4),
-                DomainMembership::Sandboxed(DomainId::new(0x22)),
+                DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 0x22).unwrap()),
                 21,
                 captured(b"tar:get"),
             )),
@@ -647,11 +652,11 @@ mod tests {
         assert_eq!(
             denials,
             [
-                "DENIAL type=FS domain=10 blockers=FS:read_file target=/tmp/file count=1 age=0s same_exec=1 logged=0",
-                "DENIAL type=NET domain=10 blockers=Net:connect_tcp target=dport:443 count=1 age=0s same_exec=1 logged=0",
-                "DENIAL type=PTRACE domain=10 blockers=ptrace target=pid:20:tracee count=1 age=0s same_exec=1 logged=0 tracee_domain=0",
-                "DENIAL type=SIGNAL domain=10 blockers=Scope:signal target=pid:21:tar\\x3aget count=1 age=0s same_exec=1 logged=0 target_domain=22",
-                "DENIAL type=ABSTRACT_UNIX domain=10 blockers=Scope:abstract_unix_socket target=peer:22 count=1 age=0s same_exec=1 logged=0 peer_domain=0",
+                "DENIAL type=FS domain=100000010 blockers=FS:read_file target=/tmp/file count=1 age=0s same_exec=1 logged=0",
+                "DENIAL type=NET domain=100000010 blockers=Net:connect_tcp target=dport:443 count=1 age=0s same_exec=1 logged=0",
+                "DENIAL type=PTRACE domain=100000010 blockers=ptrace target=pid:20:tracee count=1 age=0s same_exec=1 logged=0 tracee_domain=0",
+                "DENIAL type=SIGNAL domain=100000010 blockers=Scope:signal target=pid:21:tar\\x3aget count=1 age=0s same_exec=1 logged=0 target_domain=100000022",
+                "DENIAL type=ABSTRACT_UNIX domain=100000010 blockers=Scope:abstract_unix_socket target=peer:22 count=1 age=0s same_exec=1 logged=0 peer_domain=0",
             ]
         );
         assert!(output.ends_with(
@@ -664,7 +669,12 @@ mod tests {
         let event = Event::DenyAccessFs(DenyAccessFsEvent::new(
             timestamp(1),
             DenialContext::new(
-                HierarchySnapshot::new(DomainId::new(0x10), None, 10, captured(b"creator")),
+                HierarchySnapshot::new(
+                    DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap(),
+                    None,
+                    10,
+                    captured(b"creator"),
+                ),
                 1,
                 false,
                 true,
@@ -677,7 +687,7 @@ mod tests {
 
         assert_eq!(
             Batch::new().process(&event)[1],
-            "DENIAL type=FS domain=10 blockers=FS:read_file target=/tmp/file count=1 age=0s same_exec=0 logged=1"
+            "DENIAL type=FS domain=100000010 blockers=FS:read_file target=/tmp/file count=1 age=0s same_exec=0 logged=1"
         );
     }
 
@@ -706,9 +716,9 @@ mod tests {
         );
         let create = Event::CreateDomain(CreateDomainEvent::new(
             timestamp(1),
-            RulesetId::new(1),
+            RulesetId::new(MIN_LANDLOCK_ID + 1).unwrap(),
             0,
-            DomainId::new(2),
+            DomainId::new(MIN_LANDLOCK_ID + 2).unwrap(),
             None,
             3,
             captured(b"a b]\\\x1b"),
@@ -772,7 +782,7 @@ mod tests {
         let relational = Event::DenyScopeSignal(DenyScopeSignalEvent::new(
             timestamp(2),
             context(1, None, 1),
-            DomainMembership::Sandboxed(DomainId::new(2)),
+            DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 2).unwrap()),
             3,
             captured(b"target"),
         ));
@@ -780,16 +790,16 @@ mod tests {
         assert_eq!(
             output,
             [
-                "DOMAIN domain=1 parent=0 ruleset=? creator=creator[10] no_new_privs=?",
-                "DOMAIN domain=2 parent=? ruleset=? creator=? no_new_privs=?",
-                "DENIAL type=SIGNAL domain=1 blockers=Scope:signal target=pid:3:target count=1 age=0s same_exec=1 logged=0 target_domain=2",
+                "DOMAIN domain=100000001 parent=0 ruleset=? creator=creator[10] no_new_privs=?",
+                "DOMAIN domain=100000002 parent=? ruleset=? creator=? no_new_privs=?",
+                "DENIAL type=SIGNAL domain=100000001 blockers=Scope:signal target=pid:3:target count=1 age=0s same_exec=1 logged=0 target_domain=100000002",
                 "STATS domains=1/2 denials=1 (fs=0 net=0 ptrace=0 signal=1 abstract_unix=0)",
             ]
         );
 
         let deallocated = batch.process(&Event::FreeDomain(FreeDomainEvent::new(
             timestamp(3),
-            DomainId::new(1),
+            DomainId::new(MIN_LANDLOCK_ID + 1).unwrap(),
             1,
         )));
         assert_eq!(

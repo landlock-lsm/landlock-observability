@@ -148,16 +148,16 @@ pub(super) fn domain_ruleset(domain: &DomainState) -> Option<RulesetId> {
 mod tests {
     use super::*;
     use landlock_observability::event::{
-        CapturedString, CreateDomainEvent, EnforceDomainEvent, RulesetId,
+        CapturedString, CreateDomainEvent, EnforceDomainEvent, MIN_LANDLOCK_ID,
     };
 
-    fn create(id: u64, parent: Option<u64>) -> Event {
+    fn create(id_offset: u64, parent_offset: Option<u64>) -> Event {
         Event::CreateDomain(CreateDomainEvent::new(
-            KernelTimestamp::from_nanoseconds(id),
-            RulesetId::new(1),
+            KernelTimestamp::from_nanoseconds(id_offset),
+            RulesetId::new(MIN_LANDLOCK_ID + 1).unwrap(),
             0,
-            DomainId::new(id),
-            parent.map(DomainId::new),
+            DomainId::new(MIN_LANDLOCK_ID + id_offset).unwrap(),
+            parent_offset.map(|offset| DomainId::new(MIN_LANDLOCK_ID + offset).unwrap()),
             1,
             CapturedString::new(b"x".to_vec(), false).unwrap(),
         ))
@@ -176,7 +176,7 @@ mod tests {
         }
         model.observe(&Event::EnforceDomain(EnforceDomainEvent::new(
             KernelTimestamp::from_nanoseconds(5),
-            DomainId::new(5),
+            DomainId::new(MIN_LANDLOCK_ID + 5).unwrap(),
             1,
             true,
             false,
@@ -187,11 +187,20 @@ mod tests {
         assert_eq!(
             model.domain_tree(),
             [
-                (DomainId::new(1), vec![false]),
-                (DomainId::new(2), vec![false, false]),
-                (DomainId::new(4), vec![false, false, true]),
-                (DomainId::new(3), vec![false, true]),
-                (DomainId::new(5), vec![true]),
+                (DomainId::new(MIN_LANDLOCK_ID + 1).unwrap(), vec![false]),
+                (
+                    DomainId::new(MIN_LANDLOCK_ID + 2).unwrap(),
+                    vec![false, false]
+                ),
+                (
+                    DomainId::new(MIN_LANDLOCK_ID + 4).unwrap(),
+                    vec![false, false, true]
+                ),
+                (
+                    DomainId::new(MIN_LANDLOCK_ID + 3).unwrap(),
+                    vec![false, true]
+                ),
+                (DomainId::new(MIN_LANDLOCK_ID + 5).unwrap(), vec![true]),
             ]
         );
     }
