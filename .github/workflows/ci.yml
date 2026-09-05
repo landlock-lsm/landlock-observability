@@ -225,6 +225,9 @@ jobs:
     - name: Check documentation
       run: rustup run stable cargo doc --locked --workspace --no-deps
 
+    - name: Check docs.rs documentation without BPF generation
+      run: ./scripts/ci/check-docsrs.sh
+
     - name: Check all targets with Clippy
       run: rustup run stable cargo clippy --locked --workspace --all-targets -- --deny warnings
 
