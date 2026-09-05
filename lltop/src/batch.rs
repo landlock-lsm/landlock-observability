@@ -4,8 +4,8 @@ use std::io::{self, Write};
 
 use landlock_observability::aggregate::{AggregatedDenial, DenialAggregator};
 use landlock_observability::event::{
-    CapturedString, Denial, DomainId, DomainMembership, Event, FilesystemAccess, NetworkAccess,
-    RulesetId,
+    CapturedBytes, CapturedBytesOrigin, Denial, DomainId, DomainMembership, Event,
+    FilesystemAccess, NetworkAccess, RulesetId,
 };
 use landlock_observability::state::{
     DomainParent, DomainState, LifecycleState, RulesetVersion, State,
@@ -292,7 +292,7 @@ fn format_domain(domain: &DomainState) -> String {
     )
 }
 
-fn escape(value: &CapturedString) -> String {
+fn escape<K: CapturedBytesOrigin>(value: &CapturedBytes<K>) -> String {
     let mut escaped = String::new();
     for byte in value.as_bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/') {
@@ -301,6 +301,9 @@ fn escape(value: &CapturedString) -> String {
             use std::fmt::Write as _;
             write!(escaped, "\\x{byte:02x}").expect("writing to a String cannot fail");
         }
+    }
+    if value.bytes_omitted() {
+        escaped.push('…');
     }
     escaped
 }
@@ -449,18 +452,18 @@ fn format_stats(allocated: usize, total: usize, stats: &Stats) -> String {
 mod tests {
     use super::*;
     use landlock_observability::event::{
-        CreateDomainEvent, DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
-        DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, EnforceDomainEvent,
-        FreeDomainEvent, FreeRulesetEvent, HierarchySnapshot, KernelTimestamp, UnknownEvent,
-        MIN_LANDLOCK_ID,
+        CapturedPath, CreateDomainEvent, DenialContext, DenyAccessFsEvent, DenyAccessNetEvent,
+        DenyPtraceEvent, DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent,
+        EnforceDomainEvent, FreeDomainEvent, FreeRulesetEvent, HierarchySnapshot, KernelTimestamp,
+        UnknownEvent, MIN_LANDLOCK_ID,
     };
 
     fn timestamp(seconds: u64) -> KernelTimestamp {
         KernelTimestamp::from_nanoseconds(seconds * 1_000_000_000)
     }
 
-    fn captured(bytes: &[u8]) -> CapturedString {
-        CapturedString::new(bytes.to_vec(), false).unwrap()
+    fn captured<K: CapturedBytesOrigin>(bytes: &[u8]) -> CapturedBytes<K> {
+        CapturedBytes::new(bytes.to_vec(), false).unwrap()
     }
 
     fn context(domain_offset: u64, parent_offset: Option<u64>, count: u64) -> DenialContext {
@@ -751,9 +754,11 @@ mod tests {
     #[test]
     fn kernel_bytes_are_escaped_without_utf8_or_terminal_interpretation() {
         assert_eq!(
-            escape(&captured(b"safe/path A=%,\\\n\x1b\xff")),
+            escape(&CapturedPath::new(b"safe/path A=%,\\\n\x1b\xff".to_vec(), false).unwrap()),
             "safe/path\\x20A\\x3d\\x25\\x2c\\x5c\\x0a\\x1b\\xff"
         );
+        let omitted = CapturedPath::new(vec![b'p'; 256], true).unwrap();
+        assert_eq!(escape(&omitted), format!("{}…", "p".repeat(256)));
         let create = Event::CreateDomain(
             CreateDomainEvent::builder()
                 .timestamp(timestamp(1))

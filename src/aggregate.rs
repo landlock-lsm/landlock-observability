@@ -3,7 +3,7 @@
 //! Optional bounded aggregation of Landlock denial events.
 
 use crate::event::{
-    CapturedString, Denial, DomainId, DomainMembership, Event, FilesystemAccess, KernelTimestamp,
+    CapturedCommand, Denial, DomainId, DomainMembership, Event, FilesystemAccess, KernelTimestamp,
     NetworkAccess, Observation,
 };
 use std::collections::HashMap;
@@ -113,7 +113,7 @@ pub struct PtraceDenialKey {
     domain_id: DomainId,
     tracee_domain: DomainMembership,
     tracee_pid: u32,
-    tracee_comm: CapturedString,
+    tracee_comm: CapturedCommand,
 }
 
 impl PtraceDenialKey {
@@ -122,7 +122,7 @@ impl PtraceDenialKey {
         domain_id: DomainId,
         tracee_domain: DomainMembership,
         tracee_pid: u32,
-        tracee_comm: CapturedString,
+        tracee_comm: CapturedCommand,
     ) -> Self {
         Self {
             domain_id,
@@ -148,7 +148,7 @@ impl PtraceDenialKey {
     }
 
     /// Returns the captured command name of the tracee task.
-    pub const fn tracee_comm(&self) -> &CapturedString {
+    pub const fn tracee_comm(&self) -> &CapturedCommand {
         &self.tracee_comm
     }
 }
@@ -160,7 +160,7 @@ pub struct SignalDenialKey {
     domain_id: DomainId,
     target_domain: DomainMembership,
     target_pid: u32,
-    target_comm: CapturedString,
+    target_comm: CapturedCommand,
 }
 
 impl SignalDenialKey {
@@ -169,7 +169,7 @@ impl SignalDenialKey {
         domain_id: DomainId,
         target_domain: DomainMembership,
         target_pid: u32,
-        target_comm: CapturedString,
+        target_comm: CapturedCommand,
     ) -> Self {
         Self {
             domain_id,
@@ -195,7 +195,7 @@ impl SignalDenialKey {
     }
 
     /// Returns the captured command name of the target task.
-    pub const fn target_comm(&self) -> &CapturedString {
+    pub const fn target_comm(&self) -> &CapturedCommand {
         &self.target_comm
     }
 }
@@ -618,14 +618,15 @@ fn denial_facts(event: &Event) -> Option<(DenialKey, bool, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::{CapturedBytes, CapturedBytesOrigin};
     use crate::event::{
         DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
         DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, FreeDomainEvent, HierarchySnapshot,
         UnknownEvent, MIN_LANDLOCK_ID,
     };
 
-    fn string(value: &[u8]) -> CapturedString {
-        CapturedString::new(value.to_vec(), false).unwrap()
+    fn string<K: CapturedBytesOrigin>(value: &[u8]) -> CapturedBytes<K> {
+        CapturedBytes::new(value.to_vec(), false).unwrap()
     }
 
     fn context(

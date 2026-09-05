@@ -148,7 +148,7 @@ pub(super) fn domain_ruleset(domain: &DomainState) -> Option<RulesetId> {
 mod tests {
     use super::*;
     use landlock_observability::event::{
-        CapturedString, CreateDomainEvent, EnforceDomainEvent, MIN_LANDLOCK_ID,
+        CapturedCommand, CreateDomainEvent, EnforceDomainEvent, MIN_LANDLOCK_ID,
     };
 
     fn create(id_offset: u64, parent_offset: Option<u64>) -> Event {
@@ -162,7 +162,7 @@ mod tests {
                     parent_offset.map(|offset| DomainId::new(MIN_LANDLOCK_ID + offset).unwrap()),
                 )
                 .creator_tgid(1)
-                .creator_comm(CapturedString::new(b"x".to_vec(), false).unwrap())
+                .creator_comm(CapturedCommand::new(b"x".to_vec(), false).unwrap())
                 .build(),
         )
     }

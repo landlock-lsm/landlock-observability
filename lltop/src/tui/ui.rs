@@ -897,8 +897,8 @@ pub(super) fn clicked_tab(area: Rect, column: u16, row: u16) -> Option<Tab> {
 mod tests {
     use super::*;
     use landlock_observability::event::{
-        AddRuleFsEvent, AddRuleNetEvent, CapturedString, CreateRulesetEvent, DenialContext,
-        DenyAccessFsEvent, DenyAccessNetEvent, EnforceDomainEvent, FilesystemAccess,
+        AddRuleFsEvent, AddRuleNetEvent, CapturedCommand, CapturedPath, CreateRulesetEvent,
+        DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, EnforceDomainEvent, FilesystemAccess,
         FreeDomainEvent, HierarchySnapshot, KernelTimestamp, NetworkAccess, ScopeAccess,
         MIN_LANDLOCK_ID,
     };
@@ -914,7 +914,7 @@ mod tests {
                                 .domain_id(DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap())
                                 .parent_id(None)
                                 .creator_tgid(1)
-                                .creator_comm(CapturedString::new(b"x".to_vec(), false).unwrap())
+                                .creator_comm(CapturedCommand::new(b"x".to_vec(), false).unwrap())
                                 .build(),
                         )
                         .cumulative_denial_count(count)
@@ -925,7 +925,7 @@ mod tests {
                 .blockers(FilesystemAccess::from_bits(4))
                 .device(1)
                 .inode(inode)
-                .pathname(CapturedString::new(format!("/p/{inode}").into_bytes(), false).unwrap())
+                .pathname(CapturedPath::new(format!("/p/{inode}").into_bytes(), false).unwrap())
                 .build(),
         )
     }
@@ -1033,7 +1033,7 @@ mod tests {
                                     .parent_id(None)
                                     .creator_tgid(1)
                                     .creator_comm(
-                                        CapturedString::new(b"x".to_vec(), false).unwrap(),
+                                        CapturedCommand::new(b"x".to_vec(), false).unwrap(),
                                     )
                                     .build(),
                             )
@@ -1101,7 +1101,7 @@ mod tests {
                     .access_rights(FilesystemAccess::from_bits(1 << 1))
                     .device(1)
                     .inode(2)
-                    .pathname(CapturedString::new(b"/tmp/file".to_vec(), false).unwrap())
+                    .pathname(CapturedPath::new(b"/tmp/file".to_vec(), false).unwrap())
                     .build(),
             ),
             Event::AddRuleNet(

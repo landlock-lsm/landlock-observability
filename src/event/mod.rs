@@ -5,7 +5,11 @@
 mod access_names;
 mod string;
 
-pub use string::{CapturedString, CapturedStringError};
+pub use string::{
+    AbstractUnixSocketNameOrigin, CapturedAbstractUnixSocketName, CapturedBytes,
+    CapturedBytesError, CapturedBytesOrigin, CapturedCommand, CapturedPath, CommandOrigin,
+    PathnameOrigin,
+};
 
 use access_names::{FILESYSTEM_ACCESS_NAMES, NETWORK_ACCESS_NAMES, SCOPE_NAMES};
 use std::cmp::Ordering;
@@ -349,7 +353,7 @@ pub struct HierarchySnapshot {
     domain_id: DomainId,
     parent_id: Option<DomainId>,
     creator_tgid: u32,
-    creator_comm: CapturedString,
+    creator_comm: CapturedCommand,
 }
 
 impl HierarchySnapshot {
@@ -366,7 +370,7 @@ impl HierarchySnapshot {
         self.creator_tgid
     }
     /// Returns the captured creator command.
-    pub const fn creator_comm(&self) -> &CapturedString {
+    pub const fn creator_comm(&self) -> &CapturedCommand {
         &self.creator_comm
     }
 }
@@ -566,7 +570,7 @@ typestate_builder!(
     domain_id: DomainIdState => DomainId, "Sets the denying domain identity.";
     parent_id: ParentId => Option<DomainId>, "Sets the parent domain identity, or `None` for no parent.";
     creator_tgid: CreatorTgid => u32, "Sets the thread-group ID that created the domain.";
-    creator_comm: CreatorComm => CapturedString, "Sets the captured creator command.";
+    creator_comm: CreatorComm => CapturedCommand, "Sets the captured creator command.";
 );
 typestate_builder!(
     DenialContext, DenialContextBuilder, "A typestate builder for [`DenialContext`].";
@@ -657,7 +661,7 @@ pub struct AddRuleFsEvent {
     access_rights: FilesystemAccess,
     device: u32,
     inode: u64,
-    pathname: CapturedString,
+    pathname: CapturedPath,
 }
 typestate_builder!(
     AddRuleFsEvent, AddRuleFsEventBuilder, "A typestate builder for [`AddRuleFsEvent`].";
@@ -667,7 +671,7 @@ typestate_builder!(
     access_rights: AccessRights => FilesystemAccess, "Sets the filesystem access rights allowed by the rule.";
     device: Device => u32, "Sets the captured filesystem device number.";
     inode: Inode => u64, "Sets the captured filesystem inode number.";
-    pathname: Pathname => CapturedString, "Sets the captured filesystem pathname.";
+    pathname: Pathname => CapturedPath, "Sets the captured filesystem pathname.";
 );
 impl AddRuleFsEvent {
     /// Returns the kernel-assigned ruleset identity.
@@ -691,7 +695,7 @@ impl AddRuleFsEvent {
         self.inode
     }
     /// Returns the captured filesystem pathname.
-    pub const fn pathname(&self) -> &CapturedString {
+    pub const fn pathname(&self) -> &CapturedPath {
         &self.pathname
     }
 }
@@ -755,7 +759,7 @@ pub struct CreateDomainEvent {
     domain_id: DomainId,
     parent_id: Option<DomainId>,
     creator_tgid: u32,
-    creator_comm: CapturedString,
+    creator_comm: CapturedCommand,
 }
 typestate_builder!(
     CreateDomainEvent, CreateDomainEventBuilder, "A typestate builder for [`CreateDomainEvent`].";
@@ -765,7 +769,7 @@ typestate_builder!(
     domain_id: DomainIdState => DomainId, "Sets the kernel-assigned domain identity.";
     parent_id: ParentId => Option<DomainId>, "Sets the parent domain identity, or `None` for no parent.";
     creator_tgid: CreatorTgid => u32, "Sets the thread-group ID of the domain creator.";
-    creator_comm: CreatorComm => CapturedString, "Sets the captured command of the domain creator.";
+    creator_comm: CreatorComm => CapturedCommand, "Sets the captured command of the domain creator.";
 );
 impl CreateDomainEvent {
     /// Returns the kernel-assigned ruleset identity.
@@ -789,7 +793,7 @@ impl CreateDomainEvent {
         self.creator_tgid
     }
     /// Returns the command name of the task that created the domain.
-    pub const fn creator_comm(&self) -> &CapturedString {
+    pub const fn creator_comm(&self) -> &CapturedCommand {
         &self.creator_comm
     }
 }
@@ -809,7 +813,7 @@ pub struct DenyAccessFsEvent {
     blockers: FilesystemAccess,
     device: u32,
     inode: u64,
-    pathname: CapturedString,
+    pathname: CapturedPath,
 }
 typestate_builder!(
     DenyAccessFsEvent, DenyAccessFsEventBuilder, "A typestate builder for [`DenyAccessFsEvent`].";
@@ -818,7 +822,7 @@ typestate_builder!(
     blockers: Blockers => FilesystemAccess, "Sets the filesystem access rights that blocked the operation.";
     device: Device => u32, "Sets the captured filesystem device number.";
     inode: Inode => u64, "Sets the captured filesystem inode number.";
-    pathname: Pathname => CapturedString, "Sets the captured filesystem pathname.";
+    pathname: Pathname => CapturedPath, "Sets the captured filesystem pathname.";
 );
 impl DenyAccessFsEvent {
     /// Returns the access rights that blocked the operation.
@@ -834,7 +838,7 @@ impl DenyAccessFsEvent {
         self.inode
     }
     /// Returns the captured filesystem pathname.
-    pub const fn pathname(&self) -> &CapturedString {
+    pub const fn pathname(&self) -> &CapturedPath {
         &self.pathname
     }
 }
@@ -902,7 +906,7 @@ pub struct DenyPtraceEvent {
     context: DenialContext,
     tracee_domain: DomainMembership,
     tracee_pid: u32,
-    tracee_comm: CapturedString,
+    tracee_comm: CapturedCommand,
 }
 typestate_builder!(
     DenyPtraceEvent, DenyPtraceEventBuilder, "A typestate builder for [`DenyPtraceEvent`].";
@@ -910,7 +914,7 @@ typestate_builder!(
     context: Context => DenialContext, "Sets the facts shared by denial events.";
     tracee_domain: TraceeDomain => DomainMembership, "Sets the tracee domain membership.";
     tracee_pid: TraceePid => u32, "Sets the thread-group ID of the tracee.";
-    tracee_comm: TraceeComm => CapturedString, "Sets the captured command of the tracee.";
+    tracee_comm: TraceeComm => CapturedCommand, "Sets the captured command of the tracee.";
 );
 impl DenyPtraceEvent {
     /// Returns whether the tracee was unsandboxed or in a domain.
@@ -922,7 +926,7 @@ impl DenyPtraceEvent {
         self.tracee_pid
     }
     /// Returns the captured command name of the tracee task.
-    pub const fn tracee_comm(&self) -> &CapturedString {
+    pub const fn tracee_comm(&self) -> &CapturedCommand {
         &self.tracee_comm
     }
 }
@@ -946,7 +950,7 @@ pub struct DenyScopeSignalEvent {
     context: DenialContext,
     target_domain: DomainMembership,
     target_pid: u32,
-    target_comm: CapturedString,
+    target_comm: CapturedCommand,
 }
 typestate_builder!(
     DenyScopeSignalEvent, DenyScopeSignalEventBuilder, "A typestate builder for [`DenyScopeSignalEvent`].";
@@ -954,7 +958,7 @@ typestate_builder!(
     context: Context => DenialContext, "Sets the facts shared by denial events.";
     target_domain: TargetDomain => DomainMembership, "Sets the target domain membership.";
     target_pid: TargetPid => u32, "Sets the thread-group ID of the target.";
-    target_comm: TargetComm => CapturedString, "Sets the captured command of the target.";
+    target_comm: TargetComm => CapturedCommand, "Sets the captured command of the target.";
 );
 impl DenyScopeSignalEvent {
     /// Returns whether the target was unsandboxed or in a domain.
@@ -966,7 +970,7 @@ impl DenyScopeSignalEvent {
         self.target_pid
     }
     /// Returns the captured command name of the target task.
-    pub const fn target_comm(&self) -> &CapturedString {
+    pub const fn target_comm(&self) -> &CapturedCommand {
         &self.target_comm
     }
 }
@@ -1246,7 +1250,7 @@ mod tests {
 
         let domain_id = DomainId::new(MIN_LANDLOCK_ID + 1).unwrap();
         let parent_id = DomainId::new(MIN_LANDLOCK_ID + 2).unwrap();
-        let creator_comm = CapturedString::new(b"creator".to_vec(), false).unwrap();
+        let creator_comm = CapturedCommand::new(b"creator".to_vec(), false).unwrap();
         let hierarchy = HierarchySnapshot::builder()
             .creator_comm(creator_comm.clone())
             .domain_id(domain_id)

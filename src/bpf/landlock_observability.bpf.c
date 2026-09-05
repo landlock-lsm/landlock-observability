@@ -32,14 +32,14 @@ static __always_inline void submit_event(void *ev)
 }
 
 /*
- * String-reading helpers reserve the last byte for NUL.  Read one extra byte
- * into zeroed stack storage so a full destination contains no NUL and the
- * userspace decoder can distinguish truncation from an exact short capture.
+ * Read two bytes beyond the payload boundary.  The returned length includes
+ * NUL, so PATH_MAX_LEN + 1 is an exact-fit source while a larger result proves
+ * that source bytes were omitted from the event.
  */
-static __always_inline bool capture_path(char dst[PATH_MAX_LEN],
-					 const char *source)
+static __always_inline bool
+capture_path(char dst[PATH_MAX_LEN], __u8 *bytes_omitted, const char *source)
 {
-	char buffer[PATH_MAX_LEN + 1];
+	char buffer[PATH_MAX_LEN + 2];
 	long length;
 
 	__builtin_memset(buffer, 0, sizeof(buffer));
@@ -47,6 +47,7 @@ static __always_inline bool capture_path(char dst[PATH_MAX_LEN],
 	if (length < 0)
 		return 0;
 	__builtin_memcpy(dst, buffer, PATH_MAX_LEN);
+	*bytes_omitted = length > PATH_MAX_LEN + 1;
 	return 1;
 }
 
@@ -122,7 +123,8 @@ int BPF_PROG(handle_add_rule_fs, const struct landlock_ruleset *ruleset,
 	ev->add_rule_fs.access_rights = access_rights;
 	ev->add_rule_fs.dev = BPF_CORE_READ(path, dentry, d_sb, s_dev);
 	ev->add_rule_fs.ino = BPF_CORE_READ(path, dentry, d_inode, i_ino);
-	if (!capture_path(ev->add_rule_fs.pathname, pathname)) {
+	if (!capture_path(ev->add_rule_fs.pathname,
+			  &ev->add_rule_fs.pathname_bytes_omitted, pathname)) {
 		bpf_ringbuf_discard(ev, 0);
 		return 0;
 	}
@@ -220,7 +222,9 @@ int BPF_PROG(handle_deny_access_fs, const struct landlock_hierarchy *hierarchy,
 	ev->deny_access_fs.logged = logged;
 	ev->deny_access_fs.dev = BPF_CORE_READ(path, dentry, d_sb, s_dev);
 	ev->deny_access_fs.ino = BPF_CORE_READ(path, dentry, d_inode, i_ino);
-	if (!capture_path(ev->deny_access_fs.pathname, pathname)) {
+	if (!capture_path(ev->deny_access_fs.pathname,
+			  &ev->deny_access_fs.pathname_bytes_omitted,
+			  pathname)) {
 		bpf_ringbuf_discard(ev, 0);
 		return 0;
 	}
