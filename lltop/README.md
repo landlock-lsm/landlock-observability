@@ -22,10 +22,11 @@ with a complete backport may work but are not tested in CI.
 > limits and eviction are planned but are not implemented yet; the bounded
 > collector queue and denial aggregator do not bound `State`.
 
-The collector has the runtime requirements documented in the root README. In
-particular, starting it normally requires root or suitable BPF and tracing
-capabilities. The dependency embeds a separately executing GPL-2.0-only BPF
-program; lltop itself is available under MIT or Apache-2.0.
+The collector has the runtime requirements documented in the root README.
+`lltop` synchronously prepares the BPF collector before starting its worker.
+Starting it normally requires root or suitable BPF and tracing capabilities.
+The dependency embeds a separately executing GPL-2.0-only BPF program; lltop
+itself is available under MIT or Apache-2.0.
 
 ## Interactive mode
 
@@ -84,7 +85,7 @@ sudo lltop --batch
 
 After the collector has loaded and all programs have attached, lltop writes and
 flushes an exact `LLTOP_READY` line on standard error. Consumers should ignore
-startup diagnostics and begin the operation they want to observe only after
+preparation diagnostics and begin the operation they want to observe only after
 reading that line.
 
 Standard output is a flushed, line-oriented stream. Changes produced by each
