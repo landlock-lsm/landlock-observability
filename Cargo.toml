@@ -13,11 +13,11 @@ keywords = ["landlock", "linux", "security", "observability", "bpf"]
 categories = ["os::linux-apis"]
 
 [dependencies]
-libbpf-rs = "0.24"
+libbpf-rs = "0.27"
 unicode-general-category = "1.1.0"
 
 [build-dependencies]
-libbpf-cargo = "0.24"
+libbpf-cargo = "0.27"
 
 [dev-dependencies]
 landlock = "0.4.7"

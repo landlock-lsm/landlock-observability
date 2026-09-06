@@ -20,13 +20,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let output_dir = PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR is not set")?);
     let object = output_dir.join("landlock_observability.bpf.o");
-    let skeleton = output_dir.join("landlock_observability.skel.rs");
-
     SkeletonBuilder::new()
         .source(BPF_SOURCE)
         .obj(object)
         .clang_args(["-Wall", "-Wformat=2", "-Werror", target_endian_flag])
-        .build_and_generate(skeleton)?;
+        .build()?;
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={BPF_SOURCE}");

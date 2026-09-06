@@ -12,14 +12,14 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc;
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use landlock::{
     Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, RestrictSelfAttr, Ruleset,
     RulesetAttr, RulesetCreatedAttr, Scope, ABI,
 };
-use landlock_observability::collector::CollectorConfig;
+use landlock_observability::collector::{Collector, CollectorConfig};
 use landlock_observability::event::{
     Denial, DenialContext, DomainId, DomainMembership, EnforceDomainEvent, Event, FilesystemAccess,
     NetworkAccess, RulesetId, ScopeAccess,
@@ -36,6 +36,52 @@ const ALLOWED_PORT: u16 = 9;
 const DENIED_PORT: u16 = 1;
 // ABI v9 is the newest ABI supported by the `landlock` 0.4.7 crate.
 const TESTED_ACCESS_ABI: ABI = ABI::V9;
+
+struct RunningCollector {
+    collector: Option<Collector>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl RunningCollector {
+    fn start(event_capacity: usize) -> Result<Self, Box<dyn Error>> {
+        let (collector, collector_worker) = CollectorConfig::builder()
+            .event_capacity(event_capacity)
+            .build()?
+            .prepare()?;
+        let worker = thread::Builder::new()
+            .name("kernel-events-collector".to_owned())
+            .spawn(move || collector_worker.run())?;
+        Ok(Self {
+            collector: Some(collector),
+            worker: Some(worker),
+        })
+    }
+}
+
+impl std::ops::Deref for RunningCollector {
+    type Target = Collector;
+
+    fn deref(&self) -> &Self::Target {
+        self.collector.as_ref().expect("collector is running")
+    }
+}
+
+impl std::ops::DerefMut for RunningCollector {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.collector.as_mut().expect("collector is running")
+    }
+}
+
+impl Drop for RunningCollector {
+    fn drop(&mut self) {
+        drop(self.collector.take());
+        if let Some(worker) = self.worker.take() {
+            if let Err(payload) = worker.join() {
+                std::mem::forget(payload);
+            }
+        }
+    }
+}
 
 struct ProcessGuard(Child);
 
@@ -403,10 +449,7 @@ fn has_cap_sys_admin() -> Result<bool, Box<dyn Error>> {
 }
 
 fn no_new_privs_tsync_test(no_new_privs: bool) -> Result<(), Box<dyn Error>> {
-    let mut collector = CollectorConfig::builder()
-        .event_capacity(128)
-        .build()?
-        .start()?;
+    let mut collector = RunningCollector::start(128)?;
     let executable = env::current_exe()?;
     let mode = if no_new_privs {
         "nnp-tsync-1"
@@ -601,10 +644,7 @@ fn assert_context(
 }
 
 fn parent_test() -> Result<(), Box<dyn Error>> {
-    let mut collector = CollectorConfig::builder()
-        .event_capacity(4096)
-        .build()?
-        .start()?;
+    let mut collector = RunningCollector::start(4096)?;
     let executable = env::current_exe()?;
     let mut child = Command::new(executable)
         .arg("--ignored")

@@ -133,12 +133,12 @@ may still be restricted by kernel lockdown, LSM policy, or BPF-related sysctls.
 Collection does not require the BPF LSM, a bpffs, tracefs, or debugfs mount, a
 kernel source or header tree, clang, bpftool, or Python on the target.
 
-Collector startup optimistically loads the complete tracing interface, so a
+Collector preparation optimistically loads the complete tracing interface, so a
 supported kernel pays no compatibility-probe cost.  Only after a
-missing-target-shaped load failure does startup inspect canonical
+missing-target-shaped load failure does preparation inspect canonical
 `/sys/kernel/btf/vmlinux`.  If that BTF conclusively lacks any generation-1
-target, startup reports `UnsupportedKernel` while retaining the original load
-error as its source.  If diagnosis cannot run or the complete generation is
+target, preparation reports `UnsupportedKernel` while retaining the original
+load error as its source.  If diagnosis cannot run or the complete generation is
 present, the authoritative `Load` error is preserved.
 
 Tracepoint attachment is not exclusive.  Each collector loads its own twelve
@@ -151,13 +151,27 @@ memory, links, file descriptors, and independently bounded loss.
 `CollectorConfig::default()` returns an inert, reusable configuration without
 loading BPF, allocating channels, or spawning a thread.  Use
 `CollectorConfig::builder()` to validate a customized configuration.
-`CollectorConfig::start()` reports startup errors synchronously.  A successful
-return means the embedded object was opened and loaded, all programs were
-attached, and the ring-buffer consumer was created.  Reusing one configuration
-starts independent collectors rather than distributing one event stream across
-a worker pool.  Configuration errors are separate from startup errors, whose
-kind identifies worker spawning, object opening, loading, attachment, ring
-setup, or an early worker stop.
+`CollectorConfig::prepare()` synchronously opens and loads the BPF object,
+attaches every program, and creates the ring-buffer consumer and bounded
+channels. It returns the `Collector` and `CollectorWorker` directly. A failed
+setup destroys all partially prepared resources before returning an error.
+
+The caller moves the prepared `CollectorWorker` to its own thread, calls the
+blocking `CollectorWorker::run()`, and retains the thread's join handle. The
+worker directly owns the prepared libbpf object, links, and ring buffer.
+Dropping the collector requests shutdown, after which the caller joins the
+worker so those resources are detached and destroyed.
+
+Repeated `prepare()` calls produce independent collectors rather than a worker
+pool. Each worker owns a separate BPF ring buffer and userspace queue, and
+receives its own copy of events observed while attached.  Multiple workers
+therefore multiply BPF execution and resource use; an application that only
+needs several event processors should normally run one collector and fan out
+decoded events in userspace.
+
+Configuration errors are separate from preparation errors, whose kind
+identifies an unsupported tracing interface, object opening, loading,
+attachment, or ring setup.
 
 The collector has a bounded queue and its BPF ring-buffer callback never blocks
 waiting for userspace.  `event_capacity` bounds event-bearing and
@@ -165,9 +179,8 @@ non-terminal-error delivery queue entries.  If this queue fills, entries are
 omitted and a coalesced `OutputQueueFull` notification is paired as control
 metadata with, and reported before, the next accepted delivery; it does not
 consume a separate channel slot.  That error describes **only userspace
-output-queue loss**; it does not account
-for failed kernel ring-buffer reservations, activity before attachment, or any
-other kernel-side loss.
+output-queue loss**; it does not account for failed kernel ring-buffer
+reservations, activity before attachment, or any other kernel-side loss.
 
 ## Data model
 
@@ -223,12 +236,27 @@ following example does not imply that an unprivileged process can start it:
 ```no_run
 use landlock_observability::collector::CollectorConfig;
 use std::error::Error;
+use std::io;
+use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut collector = CollectorConfig::default().start()?;
-    let event = collector.recv_timeout(Duration::from_secs(1))?;
-    println!("{event:?}");
+    let (mut collector, worker) = CollectorConfig::default().prepare()?;
+    let worker = thread::Builder::new()
+        .name("landlock-observer".into())
+        .spawn(move || worker.run())?;
+    let result: Result<(), Box<dyn Error>> = (|| {
+        let event = collector.recv_timeout(Duration::from_secs(1))?;
+        println!("{event:?}");
+        Ok(())
+    })();
+    drop(collector);
+    if let Err(payload) = worker.join() {
+        // Avoid dropping an arbitrary panic payload during error handling.
+        std::mem::forget(payload);
+        return Err(io::Error::other("collector worker thread panicked").into());
+    }
+    result?;
     Ok(())
 }
 ```
@@ -237,8 +265,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 Landlock tracing-interface generation 1 consists of these twelve BTF
 tracepoint families and the fields represented by the corresponding typed
-events.  The collector treats them as one compatibility unit: startup succeeds
-only after all of them are loaded and attached:
+events.  The collector treats them as one compatibility unit: preparation
+succeeds only after all of them are loaded and attached:
 
 1. `landlock_create_ruleset`
 2. `landlock_add_rule_fs`
