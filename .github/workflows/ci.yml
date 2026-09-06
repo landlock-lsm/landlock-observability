@@ -330,6 +330,7 @@ jobs:
         rustup run stable cargo test --locked --workspace \
           --test kernel_events \
           --test batch_integration \
+          --test privilege-lifecycle \
           --no-run --message-format=json-render-diagnostics \
           > "$RUNNER_TEMP/integration-artifacts.json"
 
@@ -338,7 +339,8 @@ jobs:
         ./scripts/ci/select-cargo-test-executables.sh \
           "$RUNNER_TEMP/integration-artifacts.json" \
           kernel_events=KERNEL_EVENTS_EXECUTABLE \
-          batch_integration=BATCH_INTEGRATION_EXECUTABLE >> "$GITHUB_ENV"
+          batch_integration=BATCH_INTEGRATION_EXECUTABLE \
+          privilege-lifecycle=PRIVILEGE_LIFECYCLE_EXECUTABLE >> "$GITHUB_ENV"
 
     - name: Check CO-RE declarations
       run: |
@@ -365,3 +367,10 @@ jobs:
           env LANDLOCK_CRATE_TEST_ABI=11 \
           "$BATCH_INTEGRATION_EXECUTABLE" \
           --ignored --exact batch_integration --test-threads 1
+
+    - name: Run privilege lifecycle test in a fresh integration guest
+      run: |
+        ./landlock-test-tools/x86-run.sh \
+          "$KERNEL_OUTPUT/arch/x86/boot/bzImage" -- \
+          env LANDLOCK_CRATE_TEST_ABI=11 \
+          "$PRIVILEGE_LIFECYCLE_EXECUTABLE"

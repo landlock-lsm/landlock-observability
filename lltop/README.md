@@ -23,9 +23,12 @@ with a complete backport may work but are not tested in CI.
 > collector queue and denial aggregator do not bound `State`.
 
 The collector has the runtime requirements documented in the root README.
-`lltop` synchronously prepares the BPF collector before starting its worker.
-Starting it normally requires root or suitable BPF and tracing capabilities.
-The dependency embeds a separately executing GPL-2.0-only BPF program; lltop
+`lltop` minimizes credentials near process entry while still single-threaded,
+retains only `CAP_BPF` and `CAP_PERFMON` during synchronous BPF preparation,
+and starts its worker only after all capabilities have been removed and
+verified. Starting it therefore requires those setup capabilities plus
+`CAP_SETPCAP` when the initial capability bounding set is nonempty. The
+dependency embeds a separately executing GPL-2.0-only BPF program; lltop
 itself is available under MIT or Apache-2.0.
 
 ## Interactive mode

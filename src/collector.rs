@@ -12,6 +12,7 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use crate::event::Event;
+use crate::privilege::{PrivilegeError, Privileges};
 use crate::wire;
 
 mod tracepoint;
@@ -123,10 +124,11 @@ impl Default for CollectorConfigBuilder {
 
 /// A validated, inert collector configuration.
 ///
-/// This value owns no BPF resources, channels, or threads. It can be reused to
-/// prepare multiple independent collector lifecycles. Each lifecycle loads its
-/// own programs and ring buffer and receives its own copy of observed events;
-/// multiple lifecycles do not distribute one event stream across a worker pool.
+/// This value owns no BPF resources, channels, or threads. With externally
+/// preserved privileges it can be reused to prepare multiple independent
+/// collector lifecycles. Each lifecycle loads its own programs and
+/// ring buffer and receives its own copy of observed events; multiple
+/// lifecycles do not distribute one event stream across a worker pool.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct CollectorConfig {
@@ -147,15 +149,30 @@ impl CollectorConfig {
     /// Synchronously prepares an attached collector and its worker.
     ///
     /// Opening, loading, attachment, and ring-buffer setup all complete on the
-    /// calling thread. If setup fails, every partially prepared BPF resource is
-    /// destroyed before the error is returned.
+    /// calling thread. With [`crate::privilege::Privileges::minimize()`], the
+    /// remaining setup capabilities are removed and verified only after all
+    /// resources are ready. BPF setup and finalization failures before final
+    /// capability removal completes leave that privilege value available for a
+    /// retry. After capability removal, a verification failure makes the value
+    /// non-reusable. Dropping it retries verification and
+    /// aborts if verification still fails. Every preparation failure destroys
+    /// all partially or fully prepared BPF resources.
     ///
     /// The caller must then move the returned [`CollectorWorker`] to a thread,
     /// call [`CollectorWorker::run()`], retain its join handle, and drop the
     /// [`Collector`] before joining.
     #[must_use = "the collector and worker halves must both be used"]
-    pub fn prepare(&self) -> Result<(Collector, CollectorWorker), CollectorPrepareError> {
-        let (collector, worker) = backend::prepare(self.event_capacity)?;
+    pub fn prepare(
+        &self,
+        privileges: &mut Privileges,
+    ) -> Result<(Collector, CollectorWorker), CollectorPrepareError> {
+        privileges
+            .ensure_can_prepare()
+            .map_err(CollectorPrepareError::from)?;
+        let prepared = backend::prepare(self.event_capacity)?;
+        let (collector, worker) = finalize_prepared(prepared, || {
+            privileges.finish().map_err(CollectorPrepareError::from)
+        })?;
         Ok((collector, CollectorWorker { backend: worker }))
     }
 }
@@ -166,6 +183,14 @@ impl Default for CollectorConfig {
             event_capacity: DEFAULT_EVENT_CAPACITY,
         }
     }
+}
+
+fn finalize_prepared<T>(
+    prepared: T,
+    finish: impl FnOnce() -> Result<(), CollectorPrepareError>,
+) -> Result<T, CollectorPrepareError> {
+    finish()?;
+    Ok(prepared)
 }
 
 /// The preparation stage at which a collector failed.
@@ -185,6 +210,8 @@ pub enum CollectorPrepareErrorKind {
     Attach,
     /// The userspace BPF ring-buffer consumer could not be set up.
     RingSetup,
+    /// Final privilege removal or verification failed.
+    Privilege,
 }
 
 impl CollectorPrepareErrorKind {
@@ -195,6 +222,7 @@ impl CollectorPrepareErrorKind {
             Self::Load => "load BPF object",
             Self::Attach => "attach BPF programs",
             Self::RingSetup => "set up BPF ring buffer",
+            Self::Privilege => "finalize collector privileges",
         }
     }
 }
@@ -223,6 +251,12 @@ impl CollectorPrepareError {
     /// Returns the preparation stage that failed.
     pub fn kind(&self) -> CollectorPrepareErrorKind {
         self.kind
+    }
+}
+
+impl From<PrivilegeError> for CollectorPrepareError {
+    fn from(error: PrivilegeError) -> Self {
+        Self::new(CollectorPrepareErrorKind::Privilege, error)
     }
 }
 
@@ -1026,6 +1060,30 @@ mod tests {
 
         let config = CollectorConfig::default();
         assert_eq!(config.event_capacity(), 1024);
+    }
+
+    #[test]
+    fn final_transition_failure_drops_prepared_resources() {
+        struct DropTracker(Arc<AtomicBool>);
+
+        impl Drop for DropTracker {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let error = match finalize_prepared(DropTracker(Arc::clone(&dropped)), || {
+            Err(CollectorPrepareError::new(
+                CollectorPrepareErrorKind::Privilege,
+                std::io::Error::other("injected transition failure"),
+            ))
+        }) {
+            Ok(_) => panic!(),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), CollectorPrepareErrorKind::Privilege);
+        assert!(dropped.load(Ordering::Acquire));
     }
 
     #[test]
