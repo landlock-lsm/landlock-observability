@@ -13,6 +13,7 @@ use batch::Batch;
 use landlock_observability::collector::{
     Collector, CollectorConfig, CollectorReceiveErrorKind, ReceiveTimeoutError,
 };
+use landlock_observability::privilege::Privileges;
 
 const RECEIVE_TIMEOUT: Duration = Duration::from_millis(100);
 const READY_SIGNAL: &str = "LLTOP_READY";
@@ -104,8 +105,10 @@ fn combine_execution_and_worker_results(
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
+    // Minimize credentials before doing anything else in the application.
+    let mut privileges = Privileges::minimize()?;
     let mode = parse_mode().map_err(io::Error::other)?;
-    let (collector, collector_worker) = CollectorConfig::default().prepare()?;
+    let (collector, collector_worker) = CollectorConfig::default().prepare(&mut privileges)?;
     let worker = thread::Builder::new()
         .name("ll-observe".to_owned())
         .spawn(move || collector_worker.run())?;

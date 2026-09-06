@@ -511,6 +511,7 @@ dependencies = [
  "libbpf-cargo",
  "libbpf-rs",
  "nix",
+ "rustix 1.1.4",
  "unicode-general-category",
  "wait-timeout",
 ]

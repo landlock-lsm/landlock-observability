@@ -24,6 +24,7 @@ use landlock_observability::event::{
     Denial, DenialContext, DomainId, DomainMembership, EnforceDomainEvent, Event, FilesystemAccess,
     NetworkAccess, RulesetId, ScopeAccess,
 };
+use landlock_observability::privilege::Privileges;
 use landlock_observability::state::{DomainParent, LifecycleState, RulesetVersion, State};
 use nix::errno::Errno;
 use nix::sys::{ptrace, signal};
@@ -44,10 +45,11 @@ struct RunningCollector {
 
 impl RunningCollector {
     fn start(event_capacity: usize) -> Result<Self, Box<dyn Error>> {
-        let (collector, collector_worker) = CollectorConfig::builder()
+        let config = CollectorConfig::builder()
             .event_capacity(event_capacity)
-            .build()?
-            .prepare()?;
+            .build()?;
+        let mut privileges = Privileges::preserve();
+        let (collector, collector_worker) = config.prepare(&mut privileges)?;
         let worker = thread::Builder::new()
             .name("kernel-events-collector".to_owned())
             .spawn(move || collector_worker.run())?;

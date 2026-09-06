@@ -18,6 +18,7 @@
 pub mod aggregate;
 pub mod collector;
 pub mod event;
+pub mod privilege;
 pub mod state;
 
 mod wire;

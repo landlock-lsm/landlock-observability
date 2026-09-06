@@ -109,9 +109,9 @@ exact test executable on the host, run it in that guest:
 A missing, empty, or different ABI value is an error.  The CI workflow builds
 the fixed Linux revision with the test tools' default light x86_64
 configuration, checks the generated BPF object's CO-RE declarations against
-that kernel, and runs the test in a fresh guest.  The x86 harness runs the test
-as the invoking UID while preserving capabilities.  It requires `virtme-ng`
-and `qemu-system-x86`.
+that kernel, and runs each privileged test in a fresh guest.  The x86 harness
+runs the test as the invoking UID while preserving capabilities.  It requires
+`virtme-ng` and `qemu-system-x86`.
 
 This privileged test is intentionally not attempted directly on the host.
 
@@ -134,6 +134,9 @@ validate each callback signature against this target BTF during load.
 The collecting process must be allowed to load BPF programs and attach tracing
 programs—typically by running as root or with `CAP_BPF` and `CAP_PERFMON`—and
 may still be restricted by kernel lockdown, LSM policy, or BPF-related sysctls.
+`Privileges::minimize()` also needs effective `CAP_SETPCAP` when the current
+capability bounding set is nonempty, so it can empty that set before retaining
+only the BPF setup capabilities.
 Collection does not require the BPF LSM, a bpffs, tracefs, or debugfs mount, a
 kernel source or header tree, clang, bpftool, or Python on the target.
 
@@ -153,29 +156,39 @@ therefore receive independent event copies and multiply kernel execution,
 memory, links, file descriptors, and independently bounded loss.
 
 `CollectorConfig::default()` returns an inert, reusable configuration without
-loading BPF, allocating channels, or spawning a thread.  Use
-`CollectorConfig::builder()` to validate a customized configuration.
+loading BPF, allocating channels, or spawning a thread. Use
+`CollectorConfig::builder()` to validate a customized configuration. Call
+`privilege::Privileges::minimize()` near process entry while single-threaded,
+or choose `privilege::Privileges::preserve()` to make external credential
+policy explicit. Then
 `CollectorConfig::prepare()` synchronously opens and loads the BPF object,
 attaches every program, and creates the ring-buffer consumer and bounded
-channels. It returns the `Collector` and `CollectorWorker` directly. A failed
-setup destroys all partially prepared resources before returning an error.
+channels. With minimized privileges, successful preparation removes and
+verifies all remaining capabilities before returning. A failed BPF setup or a
+finalization failure before final capability removal completes drops prepared
+resources while leaving the scoped setup capabilities available for a retry.
+Once final capability removal succeeds, the privilege value is no longer
+reusable, even if the following verification fails. Dropping that scope
+then retries only verification and aborts if the empty state still cannot be
+verified. Linux credential changes are per-thread, so callers must keep this
+sequence serialized and single-threaded; the implementation rechecks that
+contract rather than claiming to update arbitrary threads.
 
 The caller moves the prepared `CollectorWorker` to its own thread, calls the
 blocking `CollectorWorker::run()`, and retains the thread's join handle. The
-worker directly owns the prepared libbpf object, links, and ring buffer.
-Dropping the collector requests shutdown, after which the caller joins the
-worker so those resources are detached and destroyed.
+worker inherits no capabilities under the minimized policy. Dropping the
+collector requests shutdown, after which the caller joins the worker.
 
-Repeated `prepare()` calls produce independent collectors rather than a worker
-pool. Each worker owns a separate BPF ring buffer and userspace queue, and
-receives its own copy of events observed while attached.  Multiple workers
-therefore multiply BPF execution and resource use; an application that only
-needs several event processors should normally run one collector and fan out
-decoded events in userspace.
+Repeated `prepare()` calls with externally preserved privileges produce
+independent collectors rather than a worker pool. Each worker owns a separate
+BPF ring buffer and userspace queue, and receives its own copy of events
+observed while attached.  Multiple workers therefore multiply BPF execution
+and resource use; an application that only needs several event processors
+should normally run one collector and fan out decoded events in userspace.
 
 Configuration errors are separate from preparation errors, whose kind
 identifies an unsupported tracing interface, object opening, loading,
-attachment, or ring setup.
+attachment, ring setup, or final privilege removal and verification.
 
 The collector has a bounded queue and its BPF ring-buffer callback never blocks
 waiting for userspace.  `event_capacity` bounds event-bearing and
@@ -184,7 +197,9 @@ omitted and a coalesced `OutputQueueFull` notification is paired as control
 metadata with, and reported before, the next accepted delivery; it does not
 consume a separate channel slot.  That error describes **only userspace
 output-queue loss**; it does not account for failed kernel ring-buffer
-reservations, activity before attachment, or any other kernel-side loss.
+reservations, activity before attachment, or any other kernel-side loss. The
+interval between attachment and the worker's first poll includes final
+privilege removal and can therefore increase such reservation loss.
 
 ## Data model
 
@@ -239,13 +254,16 @@ following example does not imply that an unprivileged process can start it:
 
 ```no_run
 use landlock_observability::collector::CollectorConfig;
+use landlock_observability::privilege;
 use std::error::Error;
 use std::io;
 use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let (mut collector, worker) = CollectorConfig::default().prepare()?;
+    let mut privileges = privilege::Privileges::minimize()?;
+    let (mut collector, worker) =
+        CollectorConfig::default().prepare(&mut privileges)?;
     let worker = thread::Builder::new()
         .name("landlock-observer".into())
         .spawn(move || worker.run())?;

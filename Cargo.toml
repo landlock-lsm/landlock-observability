@@ -14,6 +14,7 @@ categories = ["os::linux-apis"]
 
 [dependencies]
 libbpf-rs = "0.27"
+rustix = { version = "1.1.2", features = ["thread"] }
 unicode-general-category = "1.1.0"
 
 [build-dependencies]
@@ -27,6 +28,11 @@ nix = { version = "0.31", default-features = false, features = [
     "signal",
 ] }
 wait-timeout = "0.2.1"
+
+[[test]]
+name = "privilege-lifecycle"
+path = "tests/privilege_lifecycle.rs"
+harness = false
 
 [workspace]
 members = ["lltop"]
