@@ -4,7 +4,7 @@
 
 use crate::event::{
     CapturedAbstractUnixSocketName, CapturedCommand, Denial, DomainId, DomainMembership, Event,
-    FilesystemAccess, KernelTimestamp, NetworkAccess, Observation,
+    FilesystemAccess, KernelTimestamp, NetworkAccess, Observation, ProcessId,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -112,7 +112,7 @@ impl NetworkDenialKey {
 pub struct PtraceDenialKey {
     domain_id: DomainId,
     tracee_domain: DomainMembership,
-    tracee_pid: u32,
+    tracee_pid: ProcessId,
     tracee_comm: CapturedCommand,
 }
 
@@ -121,7 +121,7 @@ impl PtraceDenialKey {
     pub fn new(
         domain_id: DomainId,
         tracee_domain: DomainMembership,
-        tracee_pid: u32,
+        tracee_pid: ProcessId,
         tracee_comm: CapturedCommand,
     ) -> Self {
         Self {
@@ -142,8 +142,8 @@ impl PtraceDenialKey {
         self.tracee_domain
     }
 
-    /// Returns the thread-group ID of the tracee task.
-    pub const fn tracee_pid(&self) -> u32 {
+    /// Returns the process ID of the tracee task.
+    pub const fn tracee_pid(&self) -> ProcessId {
         self.tracee_pid
     }
 
@@ -159,7 +159,7 @@ impl PtraceDenialKey {
 pub struct SignalDenialKey {
     domain_id: DomainId,
     target_domain: DomainMembership,
-    target_pid: u32,
+    target_pid: ProcessId,
     target_comm: CapturedCommand,
 }
 
@@ -168,7 +168,7 @@ impl SignalDenialKey {
     pub fn new(
         domain_id: DomainId,
         target_domain: DomainMembership,
-        target_pid: u32,
+        target_pid: ProcessId,
         target_comm: CapturedCommand,
     ) -> Self {
         Self {
@@ -189,8 +189,8 @@ impl SignalDenialKey {
         self.target_domain
     }
 
-    /// Returns the thread-group ID of the target task.
-    pub const fn target_pid(&self) -> u32 {
+    /// Returns the process ID of the target task.
+    pub const fn target_pid(&self) -> ProcessId {
         self.target_pid
     }
 
@@ -463,17 +463,17 @@ impl DenialAggregator {
 
     /// Observes an event, aggregating it when it is a concrete denial.
     ///
-    /// Non-denial events and [`Event::Unknown`] are ignored. Every matching hit
-    /// refreshes least-recently-observed recency. Inserting a new key while full
-    /// evicts the key whose matching event was ingested least recently.
+    /// Non-denial events are ignored. Every matching hit refreshes the
+    /// least-recently-observed recency. Inserting a new key while full evicts
+    /// the key whose matching event was ingested least recently.
     pub fn observe(&mut self, event: &Event) {
         let _ = self.observe_entry(event);
     }
 
     /// Observes an event and returns the affected retained entry for a denial.
     ///
-    /// Non-denial events and [`Event::Unknown`] return `None`. The returned
-    /// entry already contains the current observation.
+    /// Non-denial events return `None`. The returned entry already contains
+    /// the current observation.
     pub fn observe_entry(&mut self, event: &Event) -> Option<&AggregatedDenial> {
         let (key, same_exec, logged) = denial_facts(event)?;
         let sequence = self.next_ingestion_sequence();
@@ -626,11 +626,15 @@ mod tests {
     use crate::event::{
         DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
         DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, FreeDomainEvent, HierarchySnapshot,
-        UnknownEvent, MIN_LANDLOCK_ID,
+        MIN_LANDLOCK_ID,
     };
 
     fn string<K: CapturedBytesOrigin>(value: &[u8]) -> CapturedBytes<K> {
         CapturedBytes::new(value.to_vec(), false).unwrap()
+    }
+
+    fn pid(value: u32) -> ProcessId {
+        ProcessId::new(value).unwrap()
     }
 
     fn context(
@@ -644,7 +648,7 @@ mod tests {
                 HierarchySnapshot::builder()
                     .domain_id(DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap())
                     .parent_id(None)
-                    .creator_tgid(10)
+                    .creator_tgid(pid(10))
                     .creator_comm(string(b"creator"))
                     .build(),
             )
@@ -695,7 +699,7 @@ mod tests {
                 .tracee_domain(DomainMembership::Sandboxed(
                     DomainId::new(MIN_LANDLOCK_ID + 20).unwrap(),
                 ))
-                .tracee_pid(30)
+                .tracee_pid(pid(30))
                 .tracee_comm(string(b"tracee"))
                 .build(),
         );
@@ -704,7 +708,7 @@ mod tests {
                 .timestamp(KernelTimestamp::from_nanoseconds(4))
                 .context(context(13, 1, false, false))
                 .target_domain(DomainMembership::Unsandboxed)
-                .target_pid(31)
+                .target_pid(pid(31))
                 .target_comm(string(b"target"))
                 .build(),
         );
@@ -715,7 +719,7 @@ mod tests {
                 .peer_domain(DomainMembership::Sandboxed(
                     DomainId::new(MIN_LANDLOCK_ID + 21).unwrap(),
                 ))
-                .peer_pid(32)
+                .peer_pid(Some(pid(32)))
                 .abstract_name(string(b"service\0v1"))
                 .build(),
         );
@@ -742,13 +746,13 @@ mod tests {
         let ptrace_key = DenialKey::Ptrace(PtraceDenialKey::new(
             DomainId::new(MIN_LANDLOCK_ID + 12).unwrap(),
             DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 20).unwrap()),
-            30,
+            pid(30),
             string(b"tracee"),
         ));
         let signal_key = DenialKey::Signal(SignalDenialKey::new(
             DomainId::new(MIN_LANDLOCK_ID + 13).unwrap(),
             DomainMembership::Unsandboxed,
-            31,
+            pid(31),
             string(b"target"),
         ));
         let unix_key = DenialKey::AbstractUnixSocket(AbstractUnixSocketDenialKey::new(
@@ -783,13 +787,13 @@ mod tests {
             key.tracee_domain(),
             DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 20).unwrap())
         );
-        assert_eq!(key.tracee_pid(), 30);
+        assert_eq!(key.tracee_pid(), pid(30));
         assert_eq!(key.tracee_comm().as_bytes(), b"tracee");
         let DenialKey::Signal(key) = signal_key else {
             panic!("signal key changed variant");
         };
         assert_eq!(key.target_domain(), DomainMembership::Unsandboxed);
-        assert_eq!(key.target_pid(), 31);
+        assert_eq!(key.target_pid(), pid(31));
         assert_eq!(key.target_comm().as_bytes(), b"target");
         let DenialKey::AbstractUnixSocket(key) = unix_key else {
             panic!("abstract UNIX key changed variant");
@@ -870,23 +874,23 @@ mod tests {
             network(1, 1, 1, (1, 1)),
             network(1, 1, 1, (2, 1)),
             network(1, 1, 1, (1, 2)),
-            task_denial(false, DomainMembership::Unsandboxed, 1, b"task"),
-            task_denial(true, DomainMembership::Unsandboxed, 1, b"task"),
+            task_denial(false, DomainMembership::Unsandboxed, pid(1), b"task"),
+            task_denial(true, DomainMembership::Unsandboxed, pid(1), b"task"),
             task_denial(
                 false,
                 DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 2).unwrap()),
-                1,
+                pid(1),
                 b"task",
             ),
-            task_denial(false, DomainMembership::Unsandboxed, 2, b"task"),
-            task_denial(false, DomainMembership::Unsandboxed, 1, b"other"),
-            unix_denial(DomainMembership::Unsandboxed, 1, b"service\0one"),
+            task_denial(false, DomainMembership::Unsandboxed, pid(2), b"task"),
+            task_denial(false, DomainMembership::Unsandboxed, pid(1), b"other"),
+            unix_denial(DomainMembership::Unsandboxed, Some(pid(1)), b"service\0one"),
             unix_denial(
                 DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 2).unwrap()),
-                1,
+                Some(pid(1)),
                 b"service\0one",
             ),
-            unix_denial(DomainMembership::Unsandboxed, 1, b"service\0two"),
+            unix_denial(DomainMembership::Unsandboxed, Some(pid(1)), b"service\0two"),
         ];
         let mut aggregator = DenialAggregator::new();
         for event in &events {
@@ -909,17 +913,17 @@ mod tests {
             )
         };
         let mut aggregator = DenialAggregator::new();
-        aggregator.observe(&denial(1, 10, b"service\0one"));
+        aggregator.observe(&denial(1, Some(pid(10)), b"service\0one"));
         let merged = aggregator
-            .observe_entry(&denial(2, 20, b"service\0one"))
+            .observe_entry(&denial(2, Some(pid(20)), b"service\0one"))
             .unwrap();
         assert_eq!(merged.occurrence_count(), 2);
         let Event::DenyScopeAbstractUnixSocket(latest) = merged.latest_event() else {
             panic!("latest event changed denial family");
         };
-        assert_eq!(latest.peer_pid(), 20);
+        assert_eq!(latest.peer_pid(), Some(pid(20)));
 
-        aggregator.observe(&denial(3, 20, b"service\0two"));
+        aggregator.observe(&denial(3, Some(pid(20)), b"service\0two"));
         assert_eq!(aggregator.len(), 2);
     }
 
@@ -931,7 +935,7 @@ mod tests {
                     .timestamp(KernelTimestamp::from_nanoseconds(1))
                     .context(context(1, 1, false, false))
                     .target_domain(target_domain)
-                    .target_pid(2)
+                    .target_pid(pid(2))
                     .target_comm(string(b"target"))
                     .build(),
             )
@@ -947,20 +951,13 @@ mod tests {
     }
 
     #[test]
-    fn non_denials_and_unknown_events_are_ignored() {
+    fn non_denials_are_ignored() {
         let mut aggregator = DenialAggregator::new();
         aggregator.observe(&Event::FreeDomain(
             FreeDomainEvent::builder()
                 .timestamp(KernelTimestamp::from_nanoseconds(1))
                 .domain_id(DomainId::new(MIN_LANDLOCK_ID + 1).unwrap())
                 .denial_count(2)
-                .build(),
-        ));
-        aggregator.observe(&Event::Unknown(
-            UnknownEvent::builder()
-                .timestamp(KernelTimestamp::from_nanoseconds(2))
-                .numeric_kind(99)
-                .record_length(344)
                 .build(),
         ));
         assert!(aggregator.is_empty());

@@ -18,19 +18,17 @@ use std::fmt;
 use crate::event::{
     CapturedCommand, CapturedPath, Denial, DenialContext, DomainId, DomainMembership,
     EnforceDomainEvent, Event, FilesystemAccess, KernelTimestamp, NetworkAccess, Observation,
-    RulesetId, ScopeAccess,
+    ProcessId, RulesetId, ScopeAccess, ThreadId,
 };
 
-/// The observed lifecycle of an object.
+/// The observed lifecycle of a retained object.
 ///
-/// Unknown, allocated, and deallocated exhaust the possible reconstructed
-/// allocation statuses. Population and enforcement are separate facts.
-/// Lifecycle facts are monotonic: once an object is known to have been
-/// deallocated, later observations can add facts but cannot change that fact.
+/// Allocated and deallocated exhaust the lifecycle states that can materialize
+/// an object in reconstructed state. Population and enforcement are separate
+/// facts. Once deallocation has been observed, later observations can add facts
+/// but cannot change that terminal lifecycle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LifecycleState {
-    /// No allocation, use, or deallocation event has established a lifecycle.
-    Unknown,
     /// The object is known to have been allocated historically.
     ///
     /// This fact may be inferred from an observed use; it is not proof that the
@@ -160,7 +158,7 @@ pub struct RulesetState {
     handled_fs: Option<FilesystemAccess>,
     handled_net: Option<NetworkAccess>,
     scoped: Option<ScopeAccess>,
-    max_observed_version: Option<u32>,
+    max_observed_version: u32,
     final_version: Option<u32>,
     free_timestamp: Option<KernelTimestamp>,
     filesystem_rules: HashMap<(u32, u64), FilesystemRuleState>,
@@ -168,15 +166,15 @@ pub struct RulesetState {
 }
 
 impl RulesetState {
-    fn unknown(id: RulesetId) -> Self {
+    fn new(id: RulesetId, lifecycle: LifecycleState, version: u32) -> Self {
         Self {
             id,
-            lifecycle: LifecycleState::Unknown,
+            lifecycle,
             creation_timestamp: None,
             handled_fs: None,
             handled_net: None,
             scoped: None,
-            max_observed_version: None,
+            max_observed_version: version,
             final_version: None,
             free_timestamp: None,
             filesystem_rules: HashMap::new(),
@@ -185,13 +183,13 @@ impl RulesetState {
     }
 
     fn mark_allocated(&mut self) {
-        if self.lifecycle == LifecycleState::Unknown {
+        if self.lifecycle != LifecycleState::Deallocated {
             self.lifecycle = LifecycleState::Allocated;
         }
     }
 
     fn update_version(&mut self, version: u32) {
-        update_max(&mut self.max_observed_version, version);
+        self.max_observed_version = self.max_observed_version.max(version);
     }
 
     /// Returns the ruleset identity.
@@ -224,10 +222,11 @@ impl RulesetState {
         self.scoped
     }
 
-    /// Returns the greatest observed version, or `None` when no version is known.
+    /// Returns the greatest observed version.
     ///
+    /// Every observation that can materialize a ruleset carries a version.
     /// Final versions reported by free events participate in this maximum.
-    pub const fn max_observed_version(&self) -> Option<u32> {
+    pub const fn max_observed_version(&self) -> u32 {
         self.max_observed_version
     }
 
@@ -280,21 +279,21 @@ pub struct DomainState {
     lifecycle: LifecycleState,
     creation_timestamp: Option<KernelTimestamp>,
     parent: Option<DomainParent>,
-    creator_tgid: Option<u32>,
+    creator_tgid: Option<ProcessId>,
     creator_comm: Option<CapturedCommand>,
     ruleset: Option<RulesetVersion>,
     cumulative_denial_count: Option<u64>,
     final_denial_count: Option<u64>,
     free_timestamp: Option<KernelTimestamp>,
-    enforcement_events: HashMap<u32, EnforceDomainEvent>,
+    enforcement_events: HashMap<ThreadId, EnforceDomainEvent>,
     any_process_wide_enforcement: bool,
 }
 
 impl DomainState {
-    fn unknown(id: DomainId) -> Self {
+    fn new(id: DomainId, lifecycle: LifecycleState) -> Self {
         Self {
             id,
-            lifecycle: LifecycleState::Unknown,
+            lifecycle,
             creation_timestamp: None,
             parent: None,
             creator_tgid: None,
@@ -309,7 +308,7 @@ impl DomainState {
     }
 
     fn mark_allocated(&mut self) {
-        if self.lifecycle == LifecycleState::Unknown {
+        if self.lifecycle != LifecycleState::Deallocated {
             self.lifecycle = LifecycleState::Allocated;
         }
     }
@@ -337,8 +336,8 @@ impl DomainState {
         self.parent
     }
 
-    /// Returns the creator thread-group ID when known.
-    pub const fn creator_tgid(&self) -> Option<u32> {
+    /// Returns the creator process ID when known.
+    pub const fn creator_tgid(&self) -> Option<ProcessId> {
         self.creator_tgid
     }
 
@@ -369,9 +368,9 @@ impl DomainState {
 
     /// Looks up the selected enforcement event for a thread.
     ///
-    /// The greatest timestamp wins for each numeric TID; equal timestamps use
-    /// the event applied last. This is not a live-thread census.
-    pub fn enforcement_event(&self, enforcing_tid: u32) -> Option<&EnforceDomainEvent> {
+    /// The greatest timestamp wins for each TID; equal timestamps use the event
+    /// applied last. This is not a live-thread census.
+    pub fn enforcement_event(&self, enforcing_tid: ThreadId) -> Option<&EnforceDomainEvent> {
         self.enforcement_events.get(&enforcing_tid)
     }
 
@@ -442,15 +441,18 @@ impl State {
 
     /// Applies one semantic observation.
     ///
-    /// Applying an unknown event has no effect. Updates are infallible and
-    /// retain stronger facts already learned from other event orderings.
+    /// Updates are infallible and retain stronger facts already learned from
+    /// other event orderings.
     pub fn apply(&mut self, event: &Event) {
         match event {
             Event::CreateRuleset(event) => {
-                let state = self
-                    .rulesets
-                    .entry(event.ruleset_id())
-                    .or_insert_with(|| RulesetState::unknown(event.ruleset_id()));
+                let state = self.rulesets.entry(event.ruleset_id()).or_insert_with(|| {
+                    RulesetState::new(
+                        event.ruleset_id(),
+                        LifecycleState::Allocated,
+                        event.ruleset_version(),
+                    )
+                });
                 state.mark_allocated();
                 state.update_version(event.ruleset_version());
                 let replace = state.creation_timestamp.is_none_or(|timestamp| {
@@ -464,10 +466,13 @@ impl State {
                 }
             }
             Event::AddRuleFs(event) => {
-                let state = self
-                    .rulesets
-                    .entry(event.ruleset_id())
-                    .or_insert_with(|| RulesetState::unknown(event.ruleset_id()));
+                let state = self.rulesets.entry(event.ruleset_id()).or_insert_with(|| {
+                    RulesetState::new(
+                        event.ruleset_id(),
+                        LifecycleState::Allocated,
+                        event.ruleset_version(),
+                    )
+                });
                 state.mark_allocated();
                 state.update_version(event.ruleset_version());
                 let key = (event.device(), event.inode());
@@ -498,10 +503,13 @@ impl State {
                 }
             }
             Event::AddRuleNet(event) => {
-                let state = self
-                    .rulesets
-                    .entry(event.ruleset_id())
-                    .or_insert_with(|| RulesetState::unknown(event.ruleset_id()));
+                let state = self.rulesets.entry(event.ruleset_id()).or_insert_with(|| {
+                    RulesetState::new(
+                        event.ruleset_id(),
+                        LifecycleState::Allocated,
+                        event.ruleset_version(),
+                    )
+                });
                 state.mark_allocated();
                 state.update_version(event.ruleset_version());
                 state
@@ -518,23 +526,25 @@ impl State {
                     });
             }
             Event::CreateDomain(event) => {
-                let ruleset = self
-                    .rulesets
-                    .entry(event.ruleset_id())
-                    .or_insert_with(|| RulesetState::unknown(event.ruleset_id()));
+                let ruleset = self.rulesets.entry(event.ruleset_id()).or_insert_with(|| {
+                    RulesetState::new(
+                        event.ruleset_id(),
+                        LifecycleState::Allocated,
+                        event.ruleset_version(),
+                    )
+                });
                 ruleset.mark_allocated();
                 ruleset.update_version(event.ruleset_version());
 
                 if let Some(parent_id) = event.parent_id() {
                     self.domains
                         .entry(parent_id)
-                        .or_insert_with(|| DomainState::unknown(parent_id));
+                        .or_insert_with(|| DomainState::new(parent_id, LifecycleState::Allocated));
                 }
 
-                let state = self
-                    .domains
-                    .entry(event.domain_id())
-                    .or_insert_with(|| DomainState::unknown(event.domain_id()));
+                let state = self.domains.entry(event.domain_id()).or_insert_with(|| {
+                    DomainState::new(event.domain_id(), LifecycleState::Allocated)
+                });
                 state.mark_allocated();
                 update_max(&mut state.cumulative_denial_count, 0);
                 let replace = state.creation_timestamp.is_none_or(|timestamp| {
@@ -570,30 +580,31 @@ impl State {
                 self.apply_denial(event.context(), Some(event.peer_domain()));
             }
             Event::FreeDomain(event) => {
-                let state = self
-                    .domains
-                    .entry(event.domain_id())
-                    .or_insert_with(|| DomainState::unknown(event.domain_id()));
+                let state = self.domains.entry(event.domain_id()).or_insert_with(|| {
+                    DomainState::new(event.domain_id(), LifecycleState::Deallocated)
+                });
                 state.lifecycle = LifecycleState::Deallocated;
                 update_latest_timestamp(&mut state.free_timestamp, event.timestamp());
                 update_max(&mut state.final_denial_count, event.denial_count());
                 update_max(&mut state.cumulative_denial_count, event.denial_count());
             }
             Event::FreeRuleset(event) => {
-                let state = self
-                    .rulesets
-                    .entry(event.ruleset_id())
-                    .or_insert_with(|| RulesetState::unknown(event.ruleset_id()));
+                let state = self.rulesets.entry(event.ruleset_id()).or_insert_with(|| {
+                    RulesetState::new(
+                        event.ruleset_id(),
+                        LifecycleState::Deallocated,
+                        event.ruleset_version(),
+                    )
+                });
                 state.lifecycle = LifecycleState::Deallocated;
                 update_latest_timestamp(&mut state.free_timestamp, event.timestamp());
                 update_max(&mut state.final_version, event.ruleset_version());
                 state.update_version(event.ruleset_version());
             }
             Event::EnforceDomain(event) => {
-                let state = self
-                    .domains
-                    .entry(event.domain_id())
-                    .or_insert_with(|| DomainState::unknown(event.domain_id()));
+                let state = self.domains.entry(event.domain_id()).or_insert_with(|| {
+                    DomainState::new(event.domain_id(), LifecycleState::Allocated)
+                });
                 state.mark_allocated();
                 state.any_process_wide_enforcement |= event.process_wide();
                 state
@@ -608,7 +619,6 @@ impl State {
                     })
                     .or_insert_with(|| event.clone());
             }
-            Event::Unknown(_) => {}
         }
     }
 
@@ -622,7 +632,7 @@ impl State {
         let state = self
             .domains
             .entry(domain_id)
-            .or_insert_with(|| DomainState::unknown(domain_id));
+            .or_insert_with(|| DomainState::new(domain_id, LifecycleState::Allocated));
         state.mark_allocated();
         if state.parent.is_none() {
             state.parent = Some(match hierarchy.parent_id() {
@@ -630,11 +640,7 @@ impl State {
                 None => DomainParent::Root,
             });
         }
-        if state.creator_tgid.is_none()
-            && state.creator_comm.is_none()
-            && hierarchy.creator_tgid() != 0
-            && !hierarchy.creator_comm().as_bytes().is_empty()
-        {
+        if state.creator_tgid.is_none() && state.creator_comm.is_none() {
             state.creator_tgid = Some(hierarchy.creator_tgid());
             state.creator_comm = Some(hierarchy.creator_comm().clone());
         }
@@ -646,12 +652,12 @@ impl State {
         if let Some(parent_id) = hierarchy.parent_id() {
             self.domains
                 .entry(parent_id)
-                .or_insert_with(|| DomainState::unknown(parent_id));
+                .or_insert_with(|| DomainState::new(parent_id, LifecycleState::Allocated));
         }
         if let Some(DomainMembership::Sandboxed(other_id)) = domain_membership {
             self.domains
                 .entry(other_id)
-                .or_insert_with(|| DomainState::unknown(other_id));
+                .or_insert_with(|| DomainState::new(other_id, LifecycleState::Allocated));
         }
     }
 
@@ -715,12 +721,20 @@ mod tests {
         AddRuleFsEvent, AddRuleNetEvent, CreateDomainEvent, CreateRulesetEvent, DenyAccessFsEvent,
         DenyAccessNetEvent, DenyPtraceEvent, DenyScopeAbstractUnixSocketEvent,
         DenyScopeSignalEvent, EnforceDomainEvent, FreeDomainEvent, FreeRulesetEvent,
-        HierarchySnapshot, UnknownEvent, MIN_LANDLOCK_ID,
+        HierarchySnapshot, MIN_LANDLOCK_ID,
     };
     use crate::event::{CapturedBytes, CapturedBytesOrigin};
 
     fn timestamp(value: u64) -> KernelTimestamp {
         KernelTimestamp::from_nanoseconds(value)
+    }
+
+    fn pid(value: u32) -> ProcessId {
+        ProcessId::new(value).unwrap()
+    }
+
+    fn tid(value: u32) -> ThreadId {
+        ThreadId::new(value).unwrap()
     }
 
     fn string<K: CapturedBytesOrigin>(value: &[u8]) -> CapturedBytes<K> {
@@ -736,7 +750,7 @@ mod tests {
         HierarchySnapshot::builder()
             .domain_id(DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap())
             .parent_id(parent_offset.map(|offset| DomainId::new(MIN_LANDLOCK_ID + offset).unwrap()))
-            .creator_tgid(creator_tgid)
+            .creator_tgid(pid(creator_tgid))
             .creator_comm(string(creator_comm))
             .build()
     }
@@ -780,7 +794,7 @@ mod tests {
         );
         assert_eq!(ruleset.lifecycle(), LifecycleState::Allocated);
         assert_eq!(ruleset.creation_timestamp(), Some(timestamp(10)));
-        assert_eq!(ruleset.max_observed_version(), Some(0));
+        assert_eq!(ruleset.max_observed_version(), 0);
         assert_eq!(ruleset.handled_fs().unwrap().bits(), 0x8000_0001);
         assert_eq!(ruleset.handled_net().unwrap().bits(), 0x8000_0002);
         assert_eq!(ruleset.scoped().unwrap().bits(), 0x8000_0001);
@@ -878,7 +892,7 @@ mod tests {
         let ruleset = state.ruleset(id).unwrap();
         assert_eq!(ruleset.lifecycle(), LifecycleState::Allocated);
         assert_eq!(ruleset.creation_timestamp(), None);
-        assert_eq!(ruleset.max_observed_version(), Some(8));
+        assert_eq!(ruleset.max_observed_version(), 8);
         assert_eq!(ruleset.filesystem_rule_count(), 2);
         assert_eq!(ruleset.filesystem_rules().count(), 2);
         let fs = ruleset.filesystem_rule(3, 4).unwrap();
@@ -904,7 +918,7 @@ mod tests {
             .unwrap();
         assert_eq!(network_only.lifecycle(), LifecycleState::Allocated);
         assert_eq!(network_only.creation_timestamp(), None);
-        assert_eq!(network_only.max_observed_version(), Some(0));
+        assert_eq!(network_only.max_observed_version(), 0);
         assert_eq!(
             network_only
                 .network_rule(90)
@@ -927,7 +941,7 @@ mod tests {
                     .ruleset_version(3)
                     .domain_id(DomainId::new(MIN_LANDLOCK_ID + 4).unwrap())
                     .parent_id(None)
-                    .creator_tgid(100)
+                    .creator_tgid(pid(100))
                     .creator_comm(string(b"creator"))
                     .build(),
             ),
@@ -938,7 +952,7 @@ mod tests {
                 EnforceDomainEvent::builder()
                     .timestamp(timestamp(11))
                     .domain_id(DomainId::new(MIN_LANDLOCK_ID + 5).unwrap())
-                    .enforcing_tid(101)
+                    .enforcing_tid(tid(101))
                     .complete(false)
                     .process_wide(false)
                     .no_new_privs(true)
@@ -953,7 +967,7 @@ mod tests {
         assert_eq!(root.creation_timestamp(), Some(timestamp(10)));
         assert_eq!(root.parent(), Some(DomainParent::Root));
         assert_eq!(root.no_new_privs(), None);
-        assert_eq!(root.creator_tgid(), Some(100));
+        assert_eq!(root.creator_tgid(), Some(pid(100)));
         assert_eq!(root.creator_comm().unwrap().as_bytes(), b"creator");
         assert_eq!(
             root.ruleset(),
@@ -975,7 +989,7 @@ mod tests {
     }
 
     #[test]
-    fn non_root_domain_create_materializes_unknown_cross_references() {
+    fn non_root_domain_create_materializes_allocated_cross_references() {
         let mut state = State::new();
         let ruleset_id = RulesetId::new(MIN_LANDLOCK_ID + 6).unwrap();
         let parent_id = DomainId::new(MIN_LANDLOCK_ID + 7).unwrap();
@@ -989,7 +1003,7 @@ mod tests {
                     .ruleset_version(9)
                     .domain_id(domain_id)
                     .parent_id(Some(parent_id))
-                    .creator_tgid(100)
+                    .creator_tgid(pid(100))
                     .creator_comm(string(b"creator"))
                     .build(),
             ),
@@ -1000,7 +1014,7 @@ mod tests {
         assert_eq!(domain.parent(), Some(DomainParent::Domain(parent_id)));
         assert_eq!(domain.ruleset(), Some(RulesetVersion::new(ruleset_id, 9)));
         let parent = state.domain(parent_id).unwrap();
-        assert_eq!(parent.lifecycle(), LifecycleState::Unknown);
+        assert_eq!(parent.lifecycle(), LifecycleState::Allocated);
         assert_eq!(parent.creation_timestamp(), None);
         assert_eq!(parent.cumulative_denial_count(), None);
         assert_eq!(parent.final_denial_count(), None);
@@ -1012,7 +1026,7 @@ mod tests {
         assert_eq!(ruleset.handled_fs(), None);
         assert_eq!(ruleset.handled_net(), None);
         assert_eq!(ruleset.scoped(), None);
-        assert_eq!(ruleset.max_observed_version(), Some(9));
+        assert_eq!(ruleset.max_observed_version(), 9);
         assert_eq!(ruleset.final_version(), None);
         assert_eq!(ruleset.filesystem_rule_count(), 0);
         assert_eq!(ruleset.network_rule_count(), 0);
@@ -1054,7 +1068,7 @@ mod tests {
                     .ruleset_version(7)
                     .domain_id(domain_id)
                     .parent_id(Some(parent_id))
-                    .creator_tgid(100)
+                    .creator_tgid(pid(100))
                     .creator_comm(string(b"creator"))
                     .build(),
             ),
@@ -1073,40 +1087,21 @@ mod tests {
         assert_eq!(ruleset.lifecycle(), LifecycleState::Deallocated);
         assert_eq!(ruleset.free_timestamp(), Some(timestamp(21)));
         assert_eq!(ruleset.final_version(), Some(5));
-        assert_eq!(ruleset.max_observed_version(), Some(7));
+        assert_eq!(ruleset.max_observed_version(), 7);
         assert_eq!(state.domain_count(), 2);
         assert_eq!(state.ruleset_count(), 1);
     }
 
     #[test]
-    fn denial_infers_creator_only_from_one_meaningful_pair() {
+    fn denial_retains_creator_with_empty_command() {
         let mut state = State::new();
         let id = DomainId::new(MIN_LANDLOCK_ID + 9).unwrap();
-        for snapshot in [hierarchy(9, None, 100, b""), hierarchy(9, None, 0, b"comm")] {
-            apply(
-                &mut state,
-                Event::DenyAccessFs(
-                    DenyAccessFsEvent::builder()
-                        .timestamp(timestamp(1))
-                        .context(context(snapshot, 1))
-                        .blockers(FilesystemAccess::from_bits(1))
-                        .device(1)
-                        .inode(2)
-                        .pathname(string(b"path"))
-                        .build(),
-                ),
-            );
-            let domain = state.domain(id).unwrap();
-            assert_eq!(domain.creator_tgid(), None);
-            assert_eq!(domain.creator_comm(), None);
-        }
-
         apply(
             &mut state,
             Event::DenyAccessFs(
                 DenyAccessFsEvent::builder()
-                    .timestamp(timestamp(2))
-                    .context(context(hierarchy(9, None, 200, b"paired"), 2))
+                    .timestamp(timestamp(1))
+                    .context(context(hierarchy(9, None, 100, b""), 1))
                     .blockers(FilesystemAccess::from_bits(1))
                     .device(1)
                     .inode(2)
@@ -1114,9 +1109,10 @@ mod tests {
                     .build(),
             ),
         );
+
         let domain = state.domain(id).unwrap();
-        assert_eq!(domain.creator_tgid(), Some(200));
-        assert_eq!(domain.creator_comm().unwrap().as_bytes(), b"paired");
+        assert_eq!(domain.creator_tgid(), Some(pid(100)));
+        assert_eq!(domain.creator_comm().unwrap().as_bytes(), b"");
     }
 
     #[test]
@@ -1126,7 +1122,7 @@ mod tests {
             Event::DenyAccessFs(
                 DenyAccessFsEvent::builder()
                     .timestamp(timestamp(1))
-                    .context(context(hierarchy(10, Some(20), 0, b""), 7))
+                    .context(context(hierarchy(10, Some(20), 110, b""), 7))
                     .blockers(FilesystemAccess::from_bits(1))
                     .device(1)
                     .inode(2)
@@ -1147,7 +1143,7 @@ mod tests {
                     .timestamp(timestamp(3))
                     .context(context(hierarchy(12, None, 112, b"ptrace"), 9))
                     .tracee_domain(DomainMembership::Unsandboxed)
-                    .tracee_pid(1)
+                    .tracee_pid(pid(1))
                     .tracee_comm(string(b"target"))
                     .build(),
             ),
@@ -1156,7 +1152,7 @@ mod tests {
                     .timestamp(timestamp(4))
                     .context(context(hierarchy(13, None, 113, b"signal"), 10))
                     .target_domain(DomainMembership::Unsandboxed)
-                    .target_pid(1)
+                    .target_pid(pid(1))
                     .target_comm(string(b"target"))
                     .build(),
             ),
@@ -1165,7 +1161,7 @@ mod tests {
                     .timestamp(timestamp(5))
                     .context(context(hierarchy(14, None, 114, b"unix"), 11))
                     .peer_domain(DomainMembership::Unsandboxed)
-                    .peer_pid(1)
+                    .peer_pid(Some(pid(1)))
                     .abstract_name(string(b"service"))
                     .build(),
             ),
@@ -1178,7 +1174,7 @@ mod tests {
             Event::DenyAccessFs(
                 DenyAccessFsEvent::builder()
                     .timestamp(timestamp(6))
-                    .context(context(hierarchy(10, Some(20), 0, b""), 7))
+                    .context(context(hierarchy(10, Some(20), 110, b""), 7))
                     .blockers(FilesystemAccess::from_bits(1))
                     .device(1)
                     .inode(2)
@@ -1197,13 +1193,13 @@ mod tests {
                 DomainId::new(MIN_LANDLOCK_ID + 20).unwrap()
             ))
         );
-        assert_eq!(denying.creator_tgid(), None);
-        assert_eq!(denying.creator_comm(), None);
+        assert_eq!(denying.creator_tgid(), Some(pid(110)));
+        assert_eq!(denying.creator_comm().unwrap().as_bytes(), b"");
         assert_eq!(denying.cumulative_denial_count(), Some(7));
         let parent = state
             .domain(DomainId::new(MIN_LANDLOCK_ID + 20).unwrap())
             .unwrap();
-        assert_eq!(parent.lifecycle(), LifecycleState::Unknown);
+        assert_eq!(parent.lifecycle(), LifecycleState::Allocated);
         assert_eq!(parent.parent(), None);
         assert_eq!(parent.cumulative_denial_count(), None);
         for (id, count) in [(11, 8), (12, 9), (13, 10), (14, 11)] {
@@ -1253,7 +1249,7 @@ mod tests {
                     .ruleset_version(7)
                     .domain_id(id)
                     .parent_id(None)
-                    .creator_tgid(301)
+                    .creator_tgid(pid(301))
                     .creator_comm(string(b"explicit"))
                     .build(),
             ),
@@ -1263,7 +1259,7 @@ mod tests {
         assert_eq!(domain.lifecycle(), LifecycleState::Deallocated);
         assert_eq!(domain.creation_timestamp(), Some(timestamp(10)));
         assert_eq!(domain.parent(), Some(DomainParent::Root));
-        assert_eq!(domain.creator_tgid(), Some(301));
+        assert_eq!(domain.creator_tgid(), Some(pid(301)));
         assert_eq!(domain.creator_comm().unwrap().as_bytes(), b"explicit");
         assert_eq!(
             domain.ruleset(),
@@ -1326,13 +1322,16 @@ mod tests {
         ] {
             apply(&mut state, event);
         }
+        let free_only_ruleset = state.ruleset(ruleset_id).unwrap();
+        assert_eq!(free_only_ruleset.lifecycle(), LifecycleState::Deallocated);
+        assert_eq!(free_only_ruleset.max_observed_version(), 11);
         apply(
             &mut state,
             Event::EnforceDomain(
                 EnforceDomainEvent::builder()
                     .timestamp(timestamp(50))
                     .domain_id(domain_id)
-                    .enforcing_tid(1)
+                    .enforcing_tid(tid(1))
                     .complete(true)
                     .process_wide(true)
                     .no_new_privs(true)
@@ -1361,7 +1360,7 @@ mod tests {
         assert_eq!(ruleset.lifecycle(), LifecycleState::Deallocated);
         assert_eq!(ruleset.free_timestamp(), Some(timestamp(40)));
         assert_eq!(ruleset.final_version(), Some(11));
-        assert_eq!(ruleset.max_observed_version(), Some(12));
+        assert_eq!(ruleset.max_observed_version(), 12);
     }
 
     #[test]
@@ -1374,7 +1373,7 @@ mod tests {
                 EnforceDomainEvent::builder()
                     .timestamp(timestamp(20))
                     .domain_id(id)
-                    .enforcing_tid(100)
+                    .enforcing_tid(tid(100))
                     .complete(true)
                     .process_wide(true)
                     .no_new_privs(true)
@@ -1384,7 +1383,7 @@ mod tests {
                 EnforceDomainEvent::builder()
                     .timestamp(timestamp(10))
                     .domain_id(id)
-                    .enforcing_tid(100)
+                    .enforcing_tid(tid(100))
                     .complete(false)
                     .process_wide(false)
                     .no_new_privs(false)
@@ -1394,7 +1393,7 @@ mod tests {
                 EnforceDomainEvent::builder()
                     .timestamp(timestamp(25))
                     .domain_id(id)
-                    .enforcing_tid(100)
+                    .enforcing_tid(tid(100))
                     .complete(false)
                     .process_wide(false)
                     .no_new_privs(false)
@@ -1404,7 +1403,7 @@ mod tests {
                 EnforceDomainEvent::builder()
                     .timestamp(timestamp(10))
                     .domain_id(id)
-                    .enforcing_tid(100)
+                    .enforcing_tid(tid(100))
                     .complete(true)
                     .process_wide(false)
                     .no_new_privs(true)
@@ -1413,7 +1412,11 @@ mod tests {
         ] {
             apply(&mut state, event);
         }
-        let selected = state.domain(id).unwrap().enforcement_event(100).unwrap();
+        let selected = state
+            .domain(id)
+            .unwrap()
+            .enforcement_event(tid(100))
+            .unwrap();
         assert_eq!(selected.timestamp(), timestamp(25));
         assert!(!selected.complete());
         assert!(state.domain(id).unwrap().any_process_wide_enforcement());
@@ -1423,7 +1426,7 @@ mod tests {
                 EnforceDomainEvent::builder()
                     .timestamp(timestamp(25))
                     .domain_id(id)
-                    .enforcing_tid(100)
+                    .enforcing_tid(tid(100))
                     .complete(true)
                     .process_wide(false)
                     .no_new_privs(false)
@@ -1433,7 +1436,7 @@ mod tests {
                 EnforceDomainEvent::builder()
                     .timestamp(timestamp(30))
                     .domain_id(id)
-                    .enforcing_tid(101)
+                    .enforcing_tid(tid(101))
                     .complete(false)
                     .process_wide(false)
                     .no_new_privs(true)
@@ -1454,16 +1457,16 @@ mod tests {
         assert_eq!(domain.lifecycle(), LifecycleState::Deallocated);
         assert_eq!(domain.enforcement_event_count(), 2);
         assert_eq!(domain.enforcement_events().count(), 2);
-        let first = domain.enforcement_event(100).unwrap();
+        let first = domain.enforcement_event(tid(100)).unwrap();
         assert_eq!(first.domain_id(), id);
-        assert_eq!(first.enforcing_tid(), 100);
+        assert_eq!(first.enforcing_tid(), tid(100));
         assert_eq!(first.timestamp(), timestamp(25));
         assert!(first.complete());
         assert!(!first.process_wide());
         assert!(!first.no_new_privs());
-        let second = domain.enforcement_event(101).unwrap();
+        let second = domain.enforcement_event(tid(101)).unwrap();
         assert_eq!(second.domain_id(), id);
-        assert_eq!(second.enforcing_tid(), 101);
+        assert_eq!(second.enforcing_tid(), tid(101));
         assert_eq!(second.timestamp(), timestamp(30));
         assert!(!second.complete());
         assert!(!second.process_wide());
@@ -1477,7 +1480,7 @@ mod tests {
                 EnforceDomainEvent::builder()
                     .timestamp(timestamp(50))
                     .domain_id(id)
-                    .enforcing_tid(100)
+                    .enforcing_tid(tid(100))
                     .complete(true)
                     .process_wide(true)
                     .no_new_privs(true)
@@ -1501,7 +1504,7 @@ mod tests {
                     .tracee_domain(DomainMembership::Sandboxed(
                         DomainId::new(MIN_LANDLOCK_ID + 61).unwrap(),
                     ))
-                    .tracee_pid(2)
+                    .tracee_pid(pid(2))
                     .tracee_comm(string(b"two"))
                     .build(),
             ),
@@ -1513,7 +1516,7 @@ mod tests {
                     .timestamp(timestamp(2))
                     .context(context(hierarchy(62, None, 1, b"one"), 1))
                     .target_domain(DomainMembership::Unsandboxed)
-                    .target_pid(2)
+                    .target_pid(pid(2))
                     .target_comm(string(b"two"))
                     .build(),
             ),
@@ -1522,28 +1525,15 @@ mod tests {
         let other = state
             .domain(DomainId::new(MIN_LANDLOCK_ID + 61).unwrap())
             .unwrap();
-        assert_eq!(other.lifecycle(), LifecycleState::Unknown);
+        assert_eq!(other.lifecycle(), LifecycleState::Allocated);
         assert_eq!(other.cumulative_denial_count(), None);
         // The count proves no zero-sentinel node was created: DomainId cannot represent zero.
         assert_eq!(state.domain_count(), 3);
     }
 
     #[test]
-    fn unknown_is_noop_and_duplicate_lifecycle_events_are_idempotent() {
+    fn duplicate_lifecycle_events_are_idempotent() {
         let mut state = State::new();
-        apply(
-            &mut state,
-            Event::Unknown(
-                UnknownEvent::builder()
-                    .timestamp(timestamp(1))
-                    .numeric_kind(200)
-                    .record_length(344)
-                    .build(),
-            ),
-        );
-        assert_eq!(state.ruleset_count(), 0);
-        assert_eq!(state.domain_count(), 0);
-
         let id = RulesetId::new(MIN_LANDLOCK_ID + 70).unwrap();
         let create = Event::CreateRuleset(
             CreateRulesetEvent::builder()
@@ -1561,7 +1551,7 @@ mod tests {
         let ruleset = state.ruleset(id).unwrap();
         assert_eq!(ruleset.lifecycle(), LifecycleState::Allocated);
         assert_eq!(ruleset.creation_timestamp(), Some(timestamp(2)));
-        assert_eq!(ruleset.max_observed_version(), Some(1));
+        assert_eq!(ruleset.max_observed_version(), 1);
         assert_eq!(ruleset.handled_fs().unwrap().bits(), 1);
         assert_eq!(ruleset.handled_net().unwrap().bits(), 2);
         assert_eq!(ruleset.scoped().unwrap().bits(), 1);
@@ -1582,6 +1572,6 @@ mod tests {
         assert_eq!(ruleset.lifecycle(), LifecycleState::Deallocated);
         assert_eq!(ruleset.free_timestamp(), Some(timestamp(3)));
         assert_eq!(ruleset.final_version(), Some(1));
-        assert_eq!(ruleset.max_observed_version(), Some(1));
+        assert_eq!(ruleset.max_observed_version(), 1);
     }
 }

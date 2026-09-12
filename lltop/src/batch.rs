@@ -280,7 +280,7 @@ fn format_domain(domain: &DomainState) -> String {
         .ruleset()
         .map_or_else(|| "?".to_owned(), |value| value.to_string());
     let creator = match (domain.creator_comm(), domain.creator_tgid()) {
-        (Some(comm), Some(tgid)) => format!("{}[{tgid}]", escape(comm)),
+        (Some(comm), Some(tgid)) => format!("{}[{}]", escape(comm), tgid.get()),
         _ => "?".to_owned(),
     };
     let no_new_privs = domain
@@ -392,13 +392,21 @@ fn format_denial(kind: DenialKind, denial: &AggregatedDenial) -> String {
         Event::DenyPtrace(event) => (
             event.context().hierarchy().domain_id(),
             "ptrace".to_owned(),
-            format!("pid:{}:{}", event.tracee_pid(), escape(event.tracee_comm())),
+            format!(
+                "pid:{}:{}",
+                event.tracee_pid().get(),
+                escape(event.tracee_comm())
+            ),
             Some(("tracee_domain", event.tracee_domain())),
         ),
         Event::DenyScopeSignal(event) => (
             event.context().hierarchy().domain_id(),
             "Scope:signal".to_owned(),
-            format!("pid:{}:{}", event.target_pid(), escape(event.target_comm())),
+            format!(
+                "pid:{}:{}",
+                event.target_pid().get(),
+                escape(event.target_comm())
+            ),
             Some(("target_domain", event.target_domain())),
         ),
         Event::DenyScopeAbstractUnixSocket(event) => (
@@ -455,7 +463,7 @@ mod tests {
         CapturedPath, CreateDomainEvent, DenialContext, DenyAccessFsEvent, DenyAccessNetEvent,
         DenyPtraceEvent, DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent,
         EnforceDomainEvent, FreeDomainEvent, FreeRulesetEvent, HierarchySnapshot, KernelTimestamp,
-        UnknownEvent, MIN_LANDLOCK_ID,
+        ProcessId, ThreadId, MIN_LANDLOCK_ID,
     };
 
     fn timestamp(seconds: u64) -> KernelTimestamp {
@@ -464,6 +472,14 @@ mod tests {
 
     fn captured<K: CapturedBytesOrigin>(bytes: &[u8]) -> CapturedBytes<K> {
         CapturedBytes::new(bytes.to_vec(), false).unwrap()
+    }
+
+    fn pid(value: u32) -> ProcessId {
+        ProcessId::new(value).unwrap()
+    }
+
+    fn tid(value: u32) -> ThreadId {
+        ThreadId::new(value).unwrap()
     }
 
     fn context(domain_offset: u64, parent_offset: Option<u64>, count: u64) -> DenialContext {
@@ -475,7 +491,7 @@ mod tests {
                         parent_offset
                             .map(|offset| DomainId::new(MIN_LANDLOCK_ID + offset).unwrap()),
                     )
-                    .creator_tgid(10)
+                    .creator_tgid(pid(10))
                     .creator_comm(captured(b"creator"))
                     .build(),
             )
@@ -507,7 +523,7 @@ mod tests {
                 .ruleset_version(3)
                 .domain_id(DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap())
                 .parent_id(None)
-                .creator_tgid(42)
+                .creator_tgid(pid(42))
                 .creator_comm(captured(b"shell"))
                 .build(),
         );
@@ -528,7 +544,7 @@ mod tests {
                 .ruleset_version(4)
                 .domain_id(DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap())
                 .parent_id(Some(DomainId::new(MIN_LANDLOCK_ID + 0x11).unwrap()))
-                .creator_tgid(43)
+                .creator_tgid(pid(43))
                 .creator_comm(captured(b"upgraded"))
                 .build(),
         );
@@ -537,7 +553,7 @@ mod tests {
             [
                 "DOMAIN domain=100000010 parent=100000011 ruleset=100000030.4 creator=upgraded[43] no_new_privs=?",
                 "DOMAIN domain=100000011 parent=? ruleset=? creator=? no_new_privs=?",
-                "STATS domains=1/2 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
+                "STATS domains=2/2 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
             ]
         );
         assert!(batch.process(&late_create).is_empty());
@@ -553,7 +569,7 @@ mod tests {
             batch.process(&late_free),
             [
                 "DROP_RULESET ruleset=1000000ab.7",
-                "STATS domains=1/2 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
+                "STATS domains=2/2 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
             ]
         );
         assert!(batch.process(&late_free).is_empty());
@@ -569,7 +585,7 @@ mod tests {
             batch.process(&late_domain),
             [
                 "DOMAIN domain=1000000cd parent=? ruleset=? creator=? no_new_privs=?",
-                "STATS domains=1/3 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
+                "STATS domains=2/3 denials=0 (fs=0 net=0 ptrace=0 signal=0 abstract_unix=0)",
             ]
         );
     }
@@ -582,7 +598,7 @@ mod tests {
             EnforceDomainEvent::builder()
                 .timestamp(timestamp(1))
                 .domain_id(id)
-                .enforcing_tid(100)
+                .enforcing_tid(tid(100))
                 .complete(false)
                 .process_wide(true)
                 .no_new_privs(true)
@@ -592,7 +608,7 @@ mod tests {
             EnforceDomainEvent::builder()
                 .timestamp(timestamp(2))
                 .domain_id(id)
-                .enforcing_tid(101)
+                .enforcing_tid(tid(101))
                 .complete(true)
                 .process_wide(true)
                 .no_new_privs(false)
@@ -602,7 +618,7 @@ mod tests {
             EnforceDomainEvent::builder()
                 .timestamp(timestamp(3))
                 .domain_id(id)
-                .enforcing_tid(101)
+                .enforcing_tid(tid(101))
                 .complete(true)
                 .process_wide(true)
                 .no_new_privs(true)
@@ -649,7 +665,7 @@ mod tests {
                     .timestamp(timestamp(3))
                     .context(context(0x10, None, 3))
                     .tracee_domain(DomainMembership::Unsandboxed)
-                    .tracee_pid(20)
+                    .tracee_pid(pid(20))
                     .tracee_comm(captured(b"tracee"))
                     .build(),
             ),
@@ -660,7 +676,7 @@ mod tests {
                     .target_domain(DomainMembership::Sandboxed(
                         DomainId::new(MIN_LANDLOCK_ID + 0x22).unwrap(),
                     ))
-                    .target_pid(21)
+                    .target_pid(pid(21))
                     .target_comm(captured(b"tar:get"))
                     .build(),
             ),
@@ -669,7 +685,7 @@ mod tests {
                     .timestamp(timestamp(5))
                     .context(context(0x10, None, 5))
                     .peer_domain(DomainMembership::Unsandboxed)
-                    .peer_pid(22)
+                    .peer_pid(Some(pid(22)))
                     .abstract_name(captured(b"service\0v1"))
                     .build(),
             ),
@@ -696,7 +712,7 @@ mod tests {
             ]
         );
         assert!(output.ends_with(
-            "STATS domains=1/2 denials=5 (fs=1 net=1 ptrace=1 signal=1 abstract_unix=1)"
+            "STATS domains=2/2 denials=5 (fs=1 net=1 ptrace=1 signal=1 abstract_unix=1)"
         ));
     }
 
@@ -711,7 +727,7 @@ mod tests {
                             HierarchySnapshot::builder()
                                 .domain_id(DomainId::new(MIN_LANDLOCK_ID + 0x10).unwrap())
                                 .parent_id(None)
-                                .creator_tgid(10)
+                                .creator_tgid(pid(10))
                                 .creator_comm(captured(b"creator"))
                                 .build(),
                         )
@@ -767,7 +783,7 @@ mod tests {
                 .ruleset_version(0)
                 .domain_id(DomainId::new(MIN_LANDLOCK_ID + 2).unwrap())
                 .parent_id(None)
-                .creator_tgid(3)
+                .creator_tgid(pid(3))
                 .creator_comm(captured(b"a b]\\\x1b"))
                 .build(),
         );
@@ -829,16 +845,6 @@ mod tests {
     #[test]
     fn irrelevant_events_are_silent_and_stats_use_reconstructed_lifecycle() {
         let mut batch = Batch::new();
-        assert!(batch
-            .process(&Event::Unknown(
-                UnknownEvent::builder()
-                    .timestamp(timestamp(1))
-                    .numeric_kind(99)
-                    .record_length(16)
-                    .build()
-            ))
-            .is_empty());
-
         let relational = Event::DenyScopeSignal(
             DenyScopeSignalEvent::builder()
                 .timestamp(timestamp(2))
@@ -846,7 +852,7 @@ mod tests {
                 .target_domain(DomainMembership::Sandboxed(
                     DomainId::new(MIN_LANDLOCK_ID + 2).unwrap(),
                 ))
-                .target_pid(3)
+                .target_pid(pid(3))
                 .target_comm(captured(b"target"))
                 .build(),
         );
@@ -857,7 +863,7 @@ mod tests {
                 "DOMAIN domain=100000001 parent=0 ruleset=? creator=creator[10] no_new_privs=?",
                 "DOMAIN domain=100000002 parent=? ruleset=? creator=? no_new_privs=?",
                 "DENIAL type=SIGNAL domain=100000001 blockers=Scope:signal target=pid:3:target count=1 age=0s same_exec=1 logged=0 target_domain=100000002",
-                "STATS domains=1/2 denials=1 (fs=0 net=0 ptrace=0 signal=1 abstract_unix=0)",
+                "STATS domains=2/2 denials=1 (fs=0 net=0 ptrace=0 signal=1 abstract_unix=0)",
             ]
         );
 
@@ -870,7 +876,7 @@ mod tests {
         ));
         assert_eq!(
             deallocated,
-            ["STATS domains=0/2 denials=1 (fs=0 net=0 ptrace=0 signal=1 abstract_unix=0)"]
+            ["STATS domains=1/2 denials=1 (fs=0 net=0 ptrace=0 signal=1 abstract_unix=0)"]
         );
     }
 

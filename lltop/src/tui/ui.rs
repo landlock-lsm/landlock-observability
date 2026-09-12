@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use landlock_observability::aggregate::{AggregatedDenial, DenialKey};
 use landlock_observability::event::{DomainId, Event, RulesetId, ScopeAccess};
-use landlock_observability::state::{DomainParent, LifecycleState};
+use landlock_observability::state::{DomainParent, LifecycleState, RulesetVersion};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -400,7 +400,9 @@ fn domain_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Disp
             let domain = model.state.domain(id)?;
             let kind = RowKind::Domain(id);
             let creator = match (domain.creator_comm(), domain.creator_tgid()) {
-                (Some(comm), Some(tgid)) => format!("{}[{tgid}]", format::escape(comm)),
+                (Some(comm), Some(tgid)) => {
+                    format!("{}[{}]", format::escape(comm), tgid.get())
+                }
                 _ => "?".to_owned(),
             };
             let count = domain
@@ -461,7 +463,9 @@ fn denial_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Disp
             .domain(domain)
             .and_then(
                 |domain| match (domain.creator_comm(), domain.creator_tgid()) {
-                    (Some(comm), Some(tgid)) => Some(format!("{}[{tgid}]", format::escape(comm))),
+                    (Some(comm), Some(tgid)) => {
+                        Some(format!("{}[{}]", format::escape(comm), tgid.get()))
+                    }
                     _ => None,
                 },
             )
@@ -547,7 +551,7 @@ fn ruleset_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Dis
                 kind,
                 text: format!(
                     "{}  rules={}  {}",
-                    format::ruleset(ruleset.ruleset_id(), ruleset.max_observed_version()),
+                    RulesetVersion::new(ruleset.ruleset_id(), ruleset.max_observed_version(),),
                     ruleset.filesystem_rule_count() + ruleset.network_rule_count(),
                     lifecycle(ruleset.lifecycle())
                 ),
@@ -571,14 +575,12 @@ fn maximum(entries: &[&AggregatedDenial]) -> u64 {
 }
 fn lifecycle(value: LifecycleState) -> &'static str {
     match value {
-        LifecycleState::Unknown => "partial",
         LifecycleState::Allocated => "allocated",
         LifecycleState::Deallocated => "deallocated",
     }
 }
 fn lifecycle_style(value: LifecycleState) -> Style {
     match value {
-        LifecycleState::Unknown => theme::unknown(),
         LifecycleState::Allocated => theme::observed(),
         LifecycleState::Deallocated => theme::tombstone(),
     }
@@ -616,12 +618,12 @@ fn target(entry: &AggregatedDenial) -> String {
         }
         Event::DenyPtrace(event) => format!(
             "pid:{} {}",
-            event.tracee_pid(),
+            event.tracee_pid().get(),
             format::escape(event.tracee_comm())
         ),
         Event::DenyScopeSignal(event) => format!(
             "pid:{} {}",
-            event.target_pid(),
+            event.target_pid().get(),
             format::escape(event.target_comm())
         ),
         Event::DenyScopeAbstractUnixSocket(event) => event.abstract_name().to_string(),
@@ -706,7 +708,9 @@ fn detail_lines(app: &App, model: &ObservationModel, width: usize) -> Vec<Line<'
                 if let Event::DenyScopeAbstractUnixSocket(event) = entry.latest_event() {
                     fields.push((
                         "Latest peer PID: ".into(),
-                        event.peer_pid().to_string(),
+                        event
+                            .peer_pid()
+                            .map_or_else(|| "unknown".to_owned(), |pid| pid.get().to_string()),
                         theme::normal(),
                     ));
                 }
@@ -748,7 +752,7 @@ fn detail_lines(app: &App, model: &ObservationModel, width: usize) -> Vec<Line<'
             if let Some(ruleset) = model.state.ruleset(*id) {
                 fields.push((
                     "Ruleset: ".into(),
-                    format::ruleset(*id, ruleset.max_observed_version()),
+                    RulesetVersion::new(*id, ruleset.max_observed_version()).to_string(),
                     theme::normal(),
                 ));
                 fields.push((
@@ -905,11 +909,20 @@ mod tests {
     use super::*;
     use landlock_observability::event::{
         AddRuleFsEvent, AddRuleNetEvent, CapturedAbstractUnixSocketName, CapturedCommand,
-        CapturedPath, CreateRulesetEvent, DenialContext, DenyAccessFsEvent, DenyAccessNetEvent,
-        DenyScopeAbstractUnixSocketEvent, DomainMembership, EnforceDomainEvent, FilesystemAccess,
-        FreeDomainEvent, HierarchySnapshot, KernelTimestamp, NetworkAccess, ScopeAccess,
-        MIN_LANDLOCK_ID,
+        CapturedPath, CreateDomainEvent, CreateRulesetEvent, Denial, DenialContext,
+        DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent, DenyScopeAbstractUnixSocketEvent,
+        DenyScopeSignalEvent, DomainMembership, EnforceDomainEvent, FilesystemAccess,
+        FreeDomainEvent, HierarchySnapshot, KernelTimestamp, NetworkAccess, ProcessId, ScopeAccess,
+        ThreadId, MIN_LANDLOCK_ID,
     };
+
+    fn pid(value: u32) -> ProcessId {
+        ProcessId::new(value).unwrap()
+    }
+
+    fn tid(value: u32) -> ThreadId {
+        ThreadId::new(value).unwrap()
+    }
 
     fn denial(domain_offset: u64, count: u64, timestamp: u64, inode: u64) -> Event {
         Event::DenyAccessFs(
@@ -921,7 +934,7 @@ mod tests {
                             HierarchySnapshot::builder()
                                 .domain_id(DomainId::new(MIN_LANDLOCK_ID + domain_offset).unwrap())
                                 .parent_id(None)
-                                .creator_tgid(1)
+                                .creator_tgid(pid(1))
                                 .creator_comm(CapturedCommand::new(b"x".to_vec(), false).unwrap())
                                 .build(),
                         )
@@ -938,11 +951,106 @@ mod tests {
         )
     }
 
+    fn abstract_denial(peer_pid: Option<ProcessId>) -> Event {
+        Event::DenyScopeAbstractUnixSocket(
+            DenyScopeAbstractUnixSocketEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(1))
+                .context(
+                    DenialContext::builder()
+                        .hierarchy(
+                            HierarchySnapshot::builder()
+                                .domain_id(DomainId::new(MIN_LANDLOCK_ID + 1).unwrap())
+                                .parent_id(None)
+                                .creator_tgid(pid(1))
+                                .creator_comm(
+                                    CapturedCommand::new(b"creator".to_vec(), false).unwrap(),
+                                )
+                                .build(),
+                        )
+                        .cumulative_denial_count(1)
+                        .same_exec(true)
+                        .logged(false)
+                        .build(),
+                )
+                .peer_domain(DomainMembership::Unsandboxed)
+                .peer_pid(peer_pid)
+                .abstract_name(
+                    CapturedAbstractUnixSocketName::new(b"service\0v1".to_vec(), false).unwrap(),
+                )
+                .build(),
+        )
+    }
+
     #[test]
     fn lifecycle_labels_cover_the_closed_statuses() {
-        assert_eq!(lifecycle(LifecycleState::Unknown), "partial");
         assert_eq!(lifecycle(LifecycleState::Allocated), "allocated");
         assert_eq!(lifecycle(LifecycleState::Deallocated), "deallocated");
+    }
+
+    #[test]
+    fn typed_process_ids_render_in_domain_and_denial_targets() {
+        let domain_id = DomainId::new(MIN_LANDLOCK_ID + 7).unwrap();
+        let ruleset_id = RulesetId::new(MIN_LANDLOCK_ID + 8).unwrap();
+        let mut model = ObservationModel::new();
+        model.observe(&Event::CreateDomain(
+            CreateDomainEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(1))
+                .ruleset_id(ruleset_id)
+                .ruleset_version(9)
+                .domain_id(domain_id)
+                .parent_id(None)
+                .creator_tgid(pid(17))
+                .creator_comm(CapturedCommand::new(b"creator".to_vec(), false).unwrap())
+                .build(),
+        ));
+        assert!(domain_rows(&model, None)[0].text.contains("creator[17]"));
+
+        let mut app = App::new();
+        app.selected = Some(RowKind::Domain(domain_id));
+        let details = detail_lines(&app, &model, 120)
+            .into_iter()
+            .flat_map(|line| line.spans.into_iter())
+            .map(|span| span.content.into_owned())
+            .collect::<String>();
+        assert!(details.contains("Ruleset: 100000008.9"));
+
+        let Event::DenyScopeAbstractUnixSocket(seed) = abstract_denial(None) else {
+            panic!()
+        };
+        let context = seed.context().clone();
+        let ptrace = Event::DenyPtrace(
+            DenyPtraceEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(2))
+                .context(context.clone())
+                .tracee_domain(DomainMembership::Unsandboxed)
+                .tracee_pid(pid(42))
+                .tracee_comm(CapturedCommand::new(b"tracee".to_vec(), false).unwrap())
+                .build(),
+        );
+        model.observe(&ptrace);
+        let ptrace = model
+            .denials
+            .entries()
+            .find(|entry| matches!(entry.latest_event(), Event::DenyPtrace(_)))
+            .unwrap();
+        assert_eq!(target(ptrace), "pid:42 tracee");
+
+        let signal = Event::DenyScopeSignal(
+            DenyScopeSignalEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(3))
+                .context(context)
+                .target_domain(DomainMembership::Unsandboxed)
+                .target_pid(pid(43))
+                .target_comm(CapturedCommand::new(b"target".to_vec(), false).unwrap())
+                .build(),
+        );
+        model.observe(&signal);
+        let signal = model
+            .denials
+            .entries()
+            .find(|entry| matches!(entry.latest_event(), Event::DenyScopeSignal(_)))
+            .unwrap();
+        assert_eq!(target(signal), "pid:43 target");
     }
 
     #[test]
@@ -953,7 +1061,7 @@ mod tests {
             EnforceDomainEvent::builder()
                 .timestamp(KernelTimestamp::from_nanoseconds(1))
                 .domain_id(id)
-                .enforcing_tid(10)
+                .enforcing_tid(tid(10))
                 .complete(true)
                 .process_wide(true)
                 .no_new_privs(false)
@@ -1013,51 +1121,26 @@ mod tests {
 
     #[test]
     fn abstract_unix_target_is_name_and_peer_pid_is_separate_detail() {
-        let event = Event::DenyScopeAbstractUnixSocket(
-            DenyScopeAbstractUnixSocketEvent::builder()
-                .timestamp(KernelTimestamp::from_nanoseconds(1))
-                .context(
-                    DenialContext::builder()
-                        .hierarchy(
-                            HierarchySnapshot::builder()
-                                .domain_id(DomainId::new(MIN_LANDLOCK_ID + 1).unwrap())
-                                .parent_id(None)
-                                .creator_tgid(1)
-                                .creator_comm(
-                                    CapturedCommand::new(b"creator".to_vec(), false).unwrap(),
-                                )
-                                .build(),
-                        )
-                        .cumulative_denial_count(1)
-                        .same_exec(true)
-                        .logged(false)
-                        .build(),
-                )
-                .peer_domain(DomainMembership::Unsandboxed)
-                .peer_pid(42)
-                .abstract_name(
-                    CapturedAbstractUnixSocketName::new(b"service\0v1".to_vec(), false).unwrap(),
-                )
-                .build(),
-        );
-        let mut model = ObservationModel::new();
-        model.observe(&event);
-        let rows = denial_rows(&model, None);
-        let denial = rows
-            .iter()
-            .find(|row| matches!(row.kind, RowKind::Denial(_)))
-            .unwrap();
-        assert!(denial.text.contains("@service\\u{0}v1"));
+        for (peer_pid, expected_pid) in [(Some(pid(42)), "42"), (None, "unknown")] {
+            let mut model = ObservationModel::new();
+            model.observe(&abstract_denial(peer_pid));
+            let rows = denial_rows(&model, None);
+            let denial = rows
+                .iter()
+                .find(|row| matches!(row.kind, RowKind::Denial(_)))
+                .unwrap();
+            assert!(denial.text.contains("@service\\u{0}v1"));
 
-        let mut app = App::new();
-        app.selected = Some(denial.kind.clone());
-        let details = detail_lines(&app, &model, 120)
-            .into_iter()
-            .flat_map(|line| line.spans.into_iter())
-            .map(|span| span.content.into_owned())
-            .collect::<String>();
-        assert!(details.contains("Target: @service\\u{0}v1"));
-        assert!(details.contains("Latest peer PID: 42"));
+            let mut app = App::new();
+            app.selected = Some(denial.kind.clone());
+            let details = detail_lines(&app, &model, 120)
+                .into_iter()
+                .flat_map(|line| line.spans.into_iter())
+                .map(|span| span.content.into_owned())
+                .collect::<String>();
+            assert!(details.contains("Target: @service\\u{0}v1"));
+            assert!(details.contains(&format!("Latest peer PID: {expected_pid}")));
+        }
     }
 
     #[test]
@@ -1088,7 +1171,7 @@ mod tests {
                                 HierarchySnapshot::builder()
                                     .domain_id(DomainId::new(MIN_LANDLOCK_ID + 1).unwrap())
                                     .parent_id(None)
-                                    .creator_tgid(1)
+                                    .creator_tgid(pid(1))
                                     .creator_comm(
                                         CapturedCommand::new(b"x".to_vec(), false).unwrap(),
                                     )

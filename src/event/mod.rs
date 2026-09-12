@@ -17,7 +17,7 @@ use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU32, NonZeroU64};
 
 /// The inclusive minimum ID assigned by the kernel to a Landlock ruleset or domain.
 pub const MIN_LANDLOCK_ID: u64 = 0x1_0000_0000;
@@ -202,6 +202,91 @@ pub type DomainId = LandlockId<Domain>;
 /// ```
 pub type RulesetId = LandlockId<Ruleset>;
 
+/// An invalid Linux process or thread ID.
+///
+/// Zero is not a valid process or thread identity.  Optional kernel fields use
+/// an outer [`Option`] instead of constructing a zero ID.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct InvalidTaskIdError {
+    value: u32,
+}
+
+impl InvalidTaskIdError {
+    /// Returns the rejected zero value.
+    pub const fn value(self) -> u32 {
+        self.value
+    }
+}
+
+impl fmt::Display for InvalidTaskIdError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "invalid Linux task ID {}, expected a nonzero value",
+            self.value
+        )
+    }
+}
+
+impl Error for InvalidTaskIdError {}
+
+macro_rules! task_id_type {
+    ($name:ident, $description:literal) => {
+        #[doc = $description]
+        ///
+        /// Values are nonzero IDs from Linux's initial PID namespace.  The
+        /// nonzero storage is private and no stable memory representation is
+        /// promised.
+        #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #[non_exhaustive]
+        pub struct $name {
+            value: NonZeroU32,
+        }
+
+        impl $name {
+            /// Creates an ID from a nonzero kernel-assigned value.
+            pub const fn new(value: u32) -> Result<Self, InvalidTaskIdError> {
+                match NonZeroU32::new(value) {
+                    Some(value) => Ok(Self { value }),
+                    None => Err(InvalidTaskIdError { value }),
+                }
+            }
+
+            /// Returns the kernel-assigned ID.
+            pub const fn get(self) -> u32 {
+                self.value.get()
+            }
+        }
+
+        impl TryFrom<u32> for $name {
+            type Error = InvalidTaskIdError;
+
+            fn try_from(value: u32) -> Result<Self, Self::Error> {
+                Self::new(value)
+            }
+        }
+
+        impl From<$name> for u32 {
+            fn from(value: $name) -> Self {
+                value.get()
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter
+                    .debug_tuple(stringify!($name))
+                    .field(&self.get())
+                    .finish()
+            }
+        }
+    };
+}
+
+task_id_type!(ProcessId, "A Linux process (thread-group) identity.");
+task_id_type!(ThreadId, "A Linux thread identity.");
+
 /// A monotonic timestamp captured by the kernel, in nanoseconds.
 ///
 /// This is a boot-relative clock reading, not wall-clock or UNIX time. Compare
@@ -352,7 +437,7 @@ impl From<DomainMembership> for Option<DomainId> {
 pub struct HierarchySnapshot {
     domain_id: DomainId,
     parent_id: Option<DomainId>,
-    creator_tgid: u32,
+    creator_tgid: ProcessId,
     creator_comm: CapturedCommand,
 }
 
@@ -365,8 +450,8 @@ impl HierarchySnapshot {
     pub const fn parent_id(&self) -> Option<DomainId> {
         self.parent_id
     }
-    /// Returns the thread-group ID that created the domain.
-    pub const fn creator_tgid(&self) -> u32 {
+    /// Returns the process ID that created the domain.
+    pub const fn creator_tgid(&self) -> ProcessId {
         self.creator_tgid
     }
     /// Returns the captured creator command.
@@ -569,7 +654,7 @@ typestate_builder!(
     HierarchySnapshot, HierarchySnapshotBuilder, "A typestate builder for [`HierarchySnapshot`].";
     domain_id: DomainIdState => DomainId, "Sets the denying domain identity.";
     parent_id: ParentId => Option<DomainId>, "Sets the parent domain identity, or `None` for no parent.";
-    creator_tgid: CreatorTgid => u32, "Sets the thread-group ID that created the domain.";
+    creator_tgid: CreatorTgid => ProcessId, "Sets the process ID that created the domain.";
     creator_comm: CreatorComm => CapturedCommand, "Sets the captured creator command.";
 );
 typestate_builder!(
@@ -758,7 +843,7 @@ pub struct CreateDomainEvent {
     ruleset_version: u32,
     domain_id: DomainId,
     parent_id: Option<DomainId>,
-    creator_tgid: u32,
+    creator_tgid: ProcessId,
     creator_comm: CapturedCommand,
 }
 typestate_builder!(
@@ -768,7 +853,7 @@ typestate_builder!(
     ruleset_version: RulesetVersion => u32, "Sets the ruleset version frozen into the domain.";
     domain_id: DomainIdState => DomainId, "Sets the kernel-assigned domain identity.";
     parent_id: ParentId => Option<DomainId>, "Sets the parent domain identity, or `None` for no parent.";
-    creator_tgid: CreatorTgid => u32, "Sets the thread-group ID of the domain creator.";
+    creator_tgid: CreatorTgid => ProcessId, "Sets the process ID of the domain creator.";
     creator_comm: CreatorComm => CapturedCommand, "Sets the captured command of the domain creator.";
 );
 impl CreateDomainEvent {
@@ -788,8 +873,8 @@ impl CreateDomainEvent {
     pub const fn parent_id(&self) -> Option<DomainId> {
         self.parent_id
     }
-    /// Returns the thread-group ID of the task that created the domain.
-    pub const fn creator_tgid(&self) -> u32 {
+    /// Returns the process ID of the task that created the domain.
+    pub const fn creator_tgid(&self) -> ProcessId {
         self.creator_tgid
     }
     /// Returns the command name of the task that created the domain.
@@ -905,7 +990,7 @@ pub struct DenyPtraceEvent {
     timestamp: KernelTimestamp,
     context: DenialContext,
     tracee_domain: DomainMembership,
-    tracee_pid: u32,
+    tracee_pid: ProcessId,
     tracee_comm: CapturedCommand,
 }
 typestate_builder!(
@@ -913,7 +998,7 @@ typestate_builder!(
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     context: Context => DenialContext, "Sets the facts shared by denial events.";
     tracee_domain: TraceeDomain => DomainMembership, "Sets the tracee domain membership.";
-    tracee_pid: TraceePid => u32, "Sets the thread-group ID of the tracee.";
+    tracee_pid: TraceePid => ProcessId, "Sets the process ID of the tracee.";
     tracee_comm: TraceeComm => CapturedCommand, "Sets the captured command of the tracee.";
 );
 impl DenyPtraceEvent {
@@ -921,8 +1006,8 @@ impl DenyPtraceEvent {
     pub const fn tracee_domain(&self) -> DomainMembership {
         self.tracee_domain
     }
-    /// Returns the thread-group ID of the tracee task.
-    pub const fn tracee_pid(&self) -> u32 {
+    /// Returns the process ID of the tracee task.
+    pub const fn tracee_pid(&self) -> ProcessId {
         self.tracee_pid
     }
     /// Returns the captured command name of the tracee task.
@@ -949,7 +1034,7 @@ pub struct DenyScopeSignalEvent {
     timestamp: KernelTimestamp,
     context: DenialContext,
     target_domain: DomainMembership,
-    target_pid: u32,
+    target_pid: ProcessId,
     target_comm: CapturedCommand,
 }
 typestate_builder!(
@@ -957,7 +1042,7 @@ typestate_builder!(
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     context: Context => DenialContext, "Sets the facts shared by denial events.";
     target_domain: TargetDomain => DomainMembership, "Sets the target domain membership.";
-    target_pid: TargetPid => u32, "Sets the thread-group ID of the target.";
+    target_pid: TargetPid => ProcessId, "Sets the process ID of the target.";
     target_comm: TargetComm => CapturedCommand, "Sets the captured command of the target.";
 );
 impl DenyScopeSignalEvent {
@@ -965,8 +1050,8 @@ impl DenyScopeSignalEvent {
     pub const fn target_domain(&self) -> DomainMembership {
         self.target_domain
     }
-    /// Returns the thread-group ID of the target task.
-    pub const fn target_pid(&self) -> u32 {
+    /// Returns the process ID of the target task.
+    pub const fn target_pid(&self) -> ProcessId {
         self.target_pid
     }
     /// Returns the captured command name of the target task.
@@ -993,7 +1078,7 @@ pub struct DenyScopeAbstractUnixSocketEvent {
     timestamp: KernelTimestamp,
     context: DenialContext,
     peer_domain: DomainMembership,
-    peer_pid: u32,
+    peer_pid: Option<ProcessId>,
     abstract_name: CapturedAbstractUnixSocketName,
 }
 typestate_builder!(
@@ -1001,7 +1086,7 @@ typestate_builder!(
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     context: Context => DenialContext, "Sets the facts shared by denial events.";
     peer_domain: PeerDomain => DomainMembership, "Sets the socket peer domain membership.";
-    peer_pid: PeerPid => u32, "Sets the best-effort socket peer PID.";
+    peer_pid: PeerPid => Option<ProcessId>, "Sets the best-effort socket peer process ID, or `None` when unavailable.";
     abstract_name: AbstractName => CapturedAbstractUnixSocketName, "Sets the peer socket's captured abstract name.";
 );
 impl DenyScopeAbstractUnixSocketEvent {
@@ -1009,10 +1094,11 @@ impl DenyScopeAbstractUnixSocketEvent {
     pub const fn peer_domain(&self) -> DomainMembership {
         self.peer_domain
     }
-    /// Returns the best-effort socket peer PID captured by the kernel.
+    /// Returns the best-effort socket peer process ID captured by the kernel.
     ///
-    /// This value is descriptive and is not a stable socket identity.
-    pub const fn peer_pid(&self) -> u32 {
+    /// `None` means peer credentials were unavailable.  A returned ID is
+    /// descriptive and is not a stable socket identity.
+    pub const fn peer_pid(&self) -> Option<ProcessId> {
         self.peer_pid
     }
     /// Returns the peer socket's exact abstract name.
@@ -1100,7 +1186,7 @@ impl Observation for FreeRulesetEvent {
 pub struct EnforceDomainEvent {
     timestamp: KernelTimestamp,
     domain_id: DomainId,
-    enforcing_tid: u32,
+    enforcing_tid: ThreadId,
     complete: bool,
     process_wide: bool,
     no_new_privs: bool,
@@ -1109,7 +1195,7 @@ typestate_builder!(
     EnforceDomainEvent, EnforceDomainEventBuilder, "A typestate builder for [`EnforceDomainEvent`].";
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     domain_id: DomainIdState => DomainId, "Sets the kernel-assigned domain identity.";
-    enforcing_tid: EnforcingTid => u32, "Sets the thread ID reporting the enforcement outcome.";
+    enforcing_tid: EnforcingTid => ThreadId, "Sets the thread ID reporting the enforcement outcome.";
     complete: Complete => bool, "Sets whether this is the concluding enforcement event.";
     process_wide: ProcessWide => bool, "Sets whether eligible sibling threads were covered or none existed.";
     no_new_privs: NoNewPrivs => bool, "Sets whether the enforcing thread had `no_new_privs` set.";
@@ -1120,7 +1206,7 @@ impl EnforceDomainEvent {
         self.domain_id
     }
     /// Returns the thread ID on which this enforcement outcome occurred.
-    pub const fn enforcing_tid(&self) -> u32 {
+    pub const fn enforcing_tid(&self) -> ThreadId {
         self.enforcing_tid
     }
     /// Returns whether this was the caller's concluding enforcement event.
@@ -1140,40 +1226,6 @@ impl EnforceDomainEvent {
 }
 impl sealed::Sealed for EnforceDomainEvent {}
 impl Observation for EnforceDomainEvent {
-    fn timestamp(&self) -> KernelTimestamp {
-        self.timestamp
-    }
-}
-
-/// An event kind not understood by this library.
-///
-/// The producer's numeric kind is retained so an observation from a newer
-/// producer is not discarded.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub struct UnknownEvent {
-    timestamp: KernelTimestamp,
-    numeric_kind: u8,
-    record_length: usize,
-}
-typestate_builder!(
-    UnknownEvent, UnknownEventBuilder, "A typestate builder for [`UnknownEvent`].";
-    timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
-    numeric_kind: NumericKind => u8, "Sets the producer numeric event kind.";
-    record_length: RecordLength => usize, "Sets the length of the record carrying the unknown kind.";
-);
-impl UnknownEvent {
-    /// Returns the producer's unrecognized numeric event kind.
-    pub const fn numeric_kind(&self) -> u8 {
-        self.numeric_kind
-    }
-    /// Returns the captured record length carrying the unknown kind.
-    pub const fn record_length(&self) -> usize {
-        self.record_length
-    }
-}
-impl sealed::Sealed for UnknownEvent {}
-impl Observation for UnknownEvent {
     fn timestamp(&self) -> KernelTimestamp {
         self.timestamp
     }
@@ -1207,8 +1259,6 @@ pub enum Event {
     FreeRuleset(FreeRulesetEvent),
     /// A domain was enforced on a thread.
     EnforceDomain(EnforceDomainEvent),
-    /// The producer supplied an event kind unknown to this library.
-    Unknown(UnknownEvent),
 }
 
 impl sealed::Sealed for Event {}
@@ -1227,7 +1277,6 @@ impl Observation for Event {
             Self::FreeDomain(event) => event.timestamp(),
             Self::FreeRuleset(event) => event.timestamp(),
             Self::EnforceDomain(event) => event.timestamp(),
-            Self::Unknown(event) => event.timestamp(),
         }
     }
 }
@@ -1262,12 +1311,12 @@ mod tests {
         let hierarchy = HierarchySnapshot::builder()
             .creator_comm(creator_comm.clone())
             .domain_id(domain_id)
-            .creator_tgid(8)
+            .creator_tgid(ProcessId::new(8).unwrap())
             .parent_id(Some(parent_id))
             .build();
         assert_eq!(hierarchy.domain_id(), domain_id);
         assert_eq!(hierarchy.parent_id(), Some(parent_id));
-        assert_eq!(hierarchy.creator_tgid(), 8);
+        assert_eq!(hierarchy.creator_tgid().get(), 8);
         assert_eq!(hierarchy.creator_comm(), &creator_comm);
 
         let context = DenialContext::builder()
@@ -1280,15 +1329,6 @@ mod tests {
         assert_eq!(context.cumulative_denial_count(), 9);
         assert!(!context.same_exec());
         assert!(context.logged());
-
-        let unknown = UnknownEvent::builder()
-            .record_length(344)
-            .timestamp(timestamp)
-            .numeric_kind(255)
-            .build();
-        assert_eq!(unknown.timestamp(), timestamp);
-        assert_eq!(unknown.numeric_kind(), 255);
-        assert_eq!(unknown.record_length(), 344);
     }
 
     #[test]
@@ -1344,6 +1384,31 @@ mod tests {
         let ruleset = RulesetId::new(MIN_LANDLOCK_ID).unwrap();
         assert_eq!(ruleset.get(), minimum.get());
         assert_eq!(format!("{ruleset:?}"), "RulesetId(4294967296)");
+    }
+
+    #[test]
+    fn task_id_boundaries_and_conversions() {
+        for error in [
+            ProcessId::new(0).unwrap_err(),
+            ThreadId::new(0).unwrap_err(),
+        ] {
+            assert_eq!(error.value(), 0);
+            assert_eq!(
+                error.to_string(),
+                "invalid Linux task ID 0, expected a nonzero value"
+            );
+        }
+
+        assert!(ProcessId::try_from(0).is_err());
+        assert!(ThreadId::try_from(0).is_err());
+
+        let process = ProcessId::new(1).unwrap();
+        let thread = ThreadId::try_from(u32::MAX).unwrap();
+        assert_eq!(process.get(), 1);
+        assert_eq!(u32::from(process), 1);
+        assert_eq!(thread.get(), u32::MAX);
+        assert_eq!(format!("{process:?}"), "ProcessId(1)");
+        assert_eq!(format!("{thread:?}"), "ThreadId(4294967295)");
     }
 
     #[test]

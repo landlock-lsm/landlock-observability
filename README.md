@@ -204,14 +204,16 @@ privilege removal and can therefore increase such reservation loss.
 ## Data model
 
 * `event::Event` is the primary raw semantic observation and can be processed or
-  retained without either higher-level helper.  Unknown producer event kinds
-  remain `Event::Unknown` with their numeric kind and captured fixed record
-  length.  Access
-  masks preserve all bits and expose known names and unknown bits separately.
+  retained without either higher-level helper.  The embedded BPF producer and
+  private decoder are co-versioned; an unrecognized private kind is reported as
+  `CollectorReceiveErrorKind::MalformedSample` rather than exposed as a semantic
+  event. Access masks preserve all bits and expose known names and unknown bits
+  separately. Process and thread IDs are typed, nonzero values; an abstract
+  socket peer PID is optional because peer credentials may be unavailable.
 * `state::State` applies events to reconstruct partial ruleset and domain facts.
-  It explicitly retains unknown values and monotonic lifecycle facts; it is not
-  a complete kernel snapshot and does not retain individual denials. It has no
-  capacity or eviction policy and retains reconstructed rulesets, domains,
+  It retains monotonic lifecycle facts and optional operation-specific facts; it
+  is not a complete kernel snapshot and does not retain individual denials. It
+  has no capacity or eviction policy and retains reconstructed rulesets, domains,
   rules, and one enforcement event per observed TID per domain until dropped,
   so memory can grow without a configured bound. Enforcement events retain
   their `no_new_privs` values and expose the domain's weakest selected value
@@ -227,26 +229,28 @@ This offline example compiles and does not load BPF:
 
 ```rust
 use landlock_observability::aggregate::DenialAggregator;
-use landlock_observability::event::{Event, KernelTimestamp, UnknownEvent};
-use landlock_observability::state::State;
+use landlock_observability::event::{DomainId, Event, FreeDomainEvent, KernelTimestamp};
+use landlock_observability::state::{LifecycleState, State};
 
 fn process(event: &Event, state: &mut State, denials: &mut DenialAggregator) {
     state.apply(event);
     denials.observe(event);
 }
 
-let event = Event::Unknown(
-    UnknownEvent::builder()
+let id = DomainId::new(0x1_0000_0000)?;
+let event = Event::FreeDomain(
+    FreeDomainEvent::builder()
         .timestamp(KernelTimestamp::from_nanoseconds(1))
-        .numeric_kind(255)
-        .record_length(32)
+        .domain_id(id)
+        .denial_count(0)
         .build(),
 );
 let mut state = State::new();
 let mut denials = DenialAggregator::new();
 process(&event, &mut state, &mut denials);
-assert!(state.domains().next().is_none());
+assert_eq!(state.domain(id).unwrap().lifecycle(), LifecycleState::Deallocated);
 assert!(denials.is_empty());
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 Live collection is privileged as described under **Runtime requirements**; the

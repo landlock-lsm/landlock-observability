@@ -216,16 +216,16 @@ mod tests {
 
     #[test]
     fn ready_events_are_drained_with_a_rendering_bound() {
-        use landlock_observability::event::{Event, KernelTimestamp, UnknownEvent};
+        use landlock_observability::event::{Event, FreeDomainEvent, KernelTimestamp};
         use std::collections::VecDeque;
 
         let mut events = (0..=MAX_READY_EVENTS_PER_CYCLE)
             .map(|timestamp| {
-                Event::Unknown(
-                    UnknownEvent::builder()
+                Event::FreeDomain(
+                    FreeDomainEvent::builder()
                         .timestamp(KernelTimestamp::from_nanoseconds(timestamp as u64))
-                        .numeric_kind(255)
-                        .record_length(344)
+                        .domain_id(DomainId::new(MIN_LANDLOCK_ID + timestamp as u64).unwrap())
+                        .denial_count(0)
                         .build(),
                 )
             })
