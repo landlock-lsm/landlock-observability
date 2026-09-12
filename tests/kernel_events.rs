@@ -22,7 +22,7 @@ use landlock::{
 use landlock_observability::collector::{Collector, CollectorConfig};
 use landlock_observability::event::{
     Denial, DenialContext, DomainId, DomainMembership, EnforceDomainEvent, Event, FilesystemAccess,
-    NetworkAccess, RulesetId, ScopeAccess,
+    NetworkAccess, RulesetId, ScopeAccess, ThreadId,
 };
 use landlock_observability::privilege::Privileges;
 use landlock_observability::state::{DomainParent, LifecycleState, RulesetVersion, State};
@@ -492,13 +492,10 @@ fn no_new_privs_tsync_test(no_new_privs: bool) -> Result<(), Box<dyn Error>> {
             .into());
         }
         match collector.recv_timeout(Duration::from_millis(100)) {
-            Ok(Event::CreateDomain(event)) if event.creator_tgid() == creator_tgid => {
+            Ok(Event::CreateDomain(event)) if event.creator_tgid().get() == creator_tgid => {
                 domain_id = Some(event.domain_id());
             }
             Ok(Event::EnforceDomain(event)) => candidates.push(event),
-            Ok(Event::Unknown(event)) => {
-                return Err(format!("unknown event during TSYNC scenario: {event:?}").into());
-            }
             Ok(_) | Err(landlock_observability::collector::ReceiveTimeoutError::Timeout) => {}
             Err(error) => return Err(error.into()),
         }
@@ -510,9 +507,6 @@ fn no_new_privs_tsync_test(no_new_privs: bool) -> Result<(), Box<dyn Error>> {
     loop {
         match collector.recv_timeout(Duration::from_millis(100)) {
             Ok(Event::EnforceDomain(event)) => candidates.push(event),
-            Ok(Event::Unknown(event)) => {
-                return Err(format!("unknown event during TSYNC drain: {event:?}").into());
-            }
             Ok(_) => {}
             Err(landlock_observability::collector::ReceiveTimeoutError::Timeout) => break,
             Err(error) => return Err(error.into()),
@@ -613,7 +607,6 @@ fn correlated_event_kind(
         Event::FreeRuleset(value) => {
             (value.ruleset_id() == ruleset_id).then_some(ExpectedEventKind::FreeRuleset)
         }
-        Event::Unknown(value) => return Err(format!("unknown event: {value:?}").into()),
         _ => return Err(format!("unhandled event variant: {event:?}").into()),
     };
     Ok(kind)
@@ -639,7 +632,7 @@ fn assert_context(
 ) {
     assert_eq!(context.hierarchy().domain_id(), domain_id);
     assert_eq!(context.hierarchy().parent_id(), None);
-    assert_eq!(context.hierarchy().creator_tgid(), creator_tgid);
+    assert_eq!(context.hierarchy().creator_tgid().get(), creator_tgid);
     assert_eq!(context.hierarchy().creator_comm().as_bytes(), creator_comm);
     assert_eq!(context.same_exec(), same_exec);
     assert_ne!(context.cumulative_denial_count(), 0);
@@ -729,12 +722,9 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
             return Err(format!("missing correlated events before deadline: {events:#?}").into());
         }
         let event = collector.recv_timeout(deadline - now)?;
-        if let Event::Unknown(value) = &event {
-            return Err(format!("unknown event: {value:?}").into());
-        }
 
         let new_scenario_ids = match &event {
-            Event::CreateDomain(value) if value.creator_tgid() == creator_tgid => {
+            Event::CreateDomain(value) if value.creator_tgid().get() == creator_tgid => {
                 Some((value.ruleset_id(), value.domain_id()))
             }
             _ => None,
@@ -808,12 +798,12 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
                 assert_eq!(value.ruleset_id(), ruleset_id);
                 assert_eq!(value.ruleset_version(), 2);
                 assert_eq!(value.parent_id(), None);
-                assert_eq!(value.creator_tgid(), creator_tgid);
+                assert_eq!(value.creator_tgid().get(), creator_tgid);
                 assert_eq!(value.creator_comm().as_bytes(), creator_comm);
             }
             ExpectedEventKind::EnforceDomain => {
                 let value = expect_event!(event, kind, EnforceDomain);
-                assert_eq!(value.enforcing_tid(), enforcing_tid);
+                assert_eq!(value.enforcing_tid().get(), enforcing_tid);
                 assert!(value.complete());
                 assert!(!value.process_wide());
                 assert!(value.no_new_privs());
@@ -862,7 +852,7 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
                 );
                 denial_counts.push(value.context().cumulative_denial_count());
                 assert_eq!(value.tracee_domain(), DomainMembership::Unsandboxed);
-                assert_eq!(value.tracee_pid(), ptrace_tgid);
+                assert_eq!(value.tracee_pid().get(), ptrace_tgid);
                 assert_eq!(value.tracee_comm().as_bytes(), ptrace_comm);
             }
             ExpectedEventKind::DenyScopeSignal => {
@@ -876,7 +866,7 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
                 );
                 denial_counts.push(value.context().cumulative_denial_count());
                 assert_eq!(value.target_domain(), DomainMembership::Unsandboxed);
-                assert_eq!(value.target_pid(), signal_tgid);
+                assert_eq!(value.target_pid().get(), signal_tgid);
                 assert_eq!(value.target_comm().as_bytes(), signal_comm);
             }
             ExpectedEventKind::DenyScopeAbstractUnixSocket => {
@@ -890,7 +880,7 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
                 );
                 denial_counts.push(value.context().cumulative_denial_count());
                 assert_eq!(value.peer_domain(), DomainMembership::Unsandboxed);
-                assert_eq!(value.peer_pid(), unix_pid);
+                assert_eq!(value.peer_pid().map(|pid| pid.get()), Some(unix_pid));
                 assert_eq!(value.abstract_name().as_bytes(), abstract_name);
             }
             ExpectedEventKind::FreeDomain => {
@@ -913,7 +903,7 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
         .ok_or("missing reconstructed ruleset")?;
     assert_eq!(state.ruleset_count(), 1);
     assert_eq!(ruleset.lifecycle(), LifecycleState::Deallocated);
-    assert_eq!(ruleset.max_observed_version(), Some(2));
+    assert_eq!(ruleset.max_observed_version(), 2);
     assert_eq!(ruleset.final_version(), Some(2));
     assert_eq!(ruleset.filesystem_rule_count(), 1);
     assert_eq!(ruleset.network_rule_count(), 1);
@@ -928,17 +918,20 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
     assert_eq!(state.domain_count(), 1);
     assert_eq!(domain.lifecycle(), LifecycleState::Deallocated);
     assert_eq!(domain.parent(), Some(DomainParent::Root));
-    assert_eq!(domain.creator_tgid(), Some(creator_tgid));
+    assert_eq!(
+        domain.creator_tgid().map(|pid| pid.get()),
+        Some(creator_tgid)
+    );
     assert_eq!(domain.ruleset(), Some(RulesetVersion::new(ruleset_id, 2)));
     assert_eq!(domain.no_new_privs(), Some(true));
     assert_eq!(domain.cumulative_denial_count(), Some(6));
     assert_eq!(domain.final_denial_count(), Some(6));
     assert_eq!(domain.enforcement_event_count(), 1);
     let enforcement = domain
-        .enforcement_event(enforcing_tid)
+        .enforcement_event(ThreadId::new(enforcing_tid).unwrap())
         .ok_or("missing retained enforcement event")?;
     assert_eq!(enforcement.domain_id(), domain_id);
-    assert_eq!(enforcement.enforcing_tid(), enforcing_tid);
+    assert_eq!(enforcement.enforcing_tid().get(), enforcing_tid);
     assert!(enforcement.complete());
     assert!(!enforcement.process_wide());
     assert!(!domain.any_process_wide_enforcement());

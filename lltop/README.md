@@ -59,7 +59,7 @@ distinct:
 | `🔔` / `🔕` | Audit visibility | `🔔` is audit-visible (`logged=1`); `🔕` is trace-only (`logged=0`). The marker reflects the latest matching denial. |
 | Target | Identity | The escaped path, port, process, or peer represented by the row. Wrapped continuations remain aligned with this field. |
 | Row color and emphasis | Recency | Age of the latest observation, independently of audit visibility. |
-| Active, freed, and unknown styles | Lifecycle knowledge | Whether reconstructed object state is current, historical, or incomplete. |
+| Allocated and deallocated styles | Lifecycle knowledge | The strongest retained allocation or deallocation fact. |
 
 The visibility column reserves two terminal cells. Its `🔔` and `🔕` constants
 are default-presentation, two-cell emoji, and tests enforce that width so a
@@ -143,15 +143,16 @@ injected. Fixed protocol punctuation is not escaped.
 kernel monotonic time from the first to latest observation of that aggregate,
 rendered as `Ns`, `NmNs`, or `NhNm`. The total and five per-kind denial counters
 are independent saturating observed-event counters. Domain allocated/total
-values come from reconstructed state; total includes unknown placeholders and
-deallocated objects. Collection is partial as described by the root README, so
-these values are observations rather than an audit log.
+values come from reconstructed state. Allocated includes objects whose existence
+is inferred only from a valid relationship; total additionally includes observed
+deallocations. Collection is partial as described by the root README, so these
+values are observations rather than an audit log.
 
 The Domains TUI shows the same weakest-wins fact. Domain details distinguish
 unknown, all-latest-observed values set, and the exact warning `WARNING:
-missing no_new_privs means privilege gain is possible`; warned active-domain rows and
-the global status use the same wording. Freed-domain details retain the
-historical observed fact without presenting a live status warning.
+missing no_new_privs means privilege gain is possible`; warned allocated-domain
+rows and the global status use the same wording. Deallocated-domain details
+retain the historical observed fact without presenting a live status warning.
 
 ## Testing
 

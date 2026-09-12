@@ -2,17 +2,9 @@
 
 use landlock_observability::event::{
     CapturedBytes, CapturedBytesOrigin, FilesystemAccess, KernelTimestamp, NetworkAccess,
-    RulesetId, ScopeAccess,
+    ScopeAccess,
 };
-use landlock_observability::state::RulesetVersion;
 use ratatui::text::Span;
-
-pub(super) fn ruleset(id: RulesetId, version: Option<u32>) -> String {
-    version.map_or_else(
-        || format!("{:x}.?", id.get()),
-        |version| RulesetVersion::new(id, version).to_string(),
-    )
-}
 
 pub(super) fn escape<K: CapturedBytesOrigin>(value: &CapturedBytes<K>) -> String {
     value.to_string()

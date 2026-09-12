@@ -4,8 +4,9 @@ use landlock_observability::collector::{
     CollectorConfig, CollectorReceiveErrorKind, ReceiveTimeoutError, TryReceiveError,
 };
 use landlock_observability::event::{
-    DomainId, DomainMembership, EnforceDomainEvent, Event, KernelTimestamp, RulesetId,
-    MIN_LANDLOCK_ID,
+    CreateRulesetEvent, DenyScopeAbstractUnixSocketEvent, DomainId, DomainMembership,
+    EnforceDomainEvent, Event, FilesystemAccess, KernelTimestamp, NetworkAccess, ProcessId,
+    RulesetId, ScopeAccess, ThreadId, MIN_LANDLOCK_ID,
 };
 use landlock_observability::state::{DomainParent, LifecycleState, RulesetVersion, State};
 
@@ -26,7 +27,6 @@ fn membership_id(membership: DomainMembership) -> Option<DomainId> {
 
 fn lifecycle_name(lifecycle: LifecycleState) -> &'static str {
     match lifecycle {
-        LifecycleState::Unknown => "unknown",
         LifecycleState::Allocated => "allocated",
         LifecycleState::Deallocated => "deallocated",
     }
@@ -38,6 +38,10 @@ fn try_receive_kind(error: TryReceiveError) -> Option<CollectorReceiveErrorKind>
         TryReceiveError::Collector(error) => Some(error.kind()),
         _ => None,
     }
+}
+
+fn peer_pid(event: &DenyScopeAbstractUnixSocketEvent) -> Option<ProcessId> {
+    event.peer_pid()
 }
 
 fn timeout_kind(error: ReceiveTimeoutError) -> Option<CollectorReceiveErrorKind> {
@@ -71,7 +75,6 @@ fn public_state_enums_are_exhaustive() {
     assert_eq!(domain_parent_id(DomainParent::Domain(id)), Some(id));
     assert_eq!(membership_id(DomainMembership::Unsandboxed), None);
     assert_eq!(membership_id(DomainMembership::Sandboxed(id)), Some(id));
-    assert_eq!(lifecycle_name(LifecycleState::Unknown), "unknown");
     assert_eq!(lifecycle_name(LifecycleState::Allocated), "allocated");
     assert_eq!(lifecycle_name(LifecycleState::Deallocated), "deallocated");
 }
@@ -90,21 +93,48 @@ fn canonical_identifiers_have_public_display_contracts() {
 }
 
 #[test]
-fn enforcement_accessors_expose_events() {
-    let id = DomainId::new(0x1_0000_0001).unwrap();
+fn task_ids_are_checked_and_peer_pid_is_optional() {
+    let process = ProcessId::new(1).unwrap();
+    let thread = ThreadId::try_from(2).unwrap();
+    assert_eq!(process.get(), 1);
+    assert_eq!(u32::from(thread), 2);
+    assert_eq!(ProcessId::new(0).unwrap_err().value(), 0);
+
+    let _peer_accessor: fn(&DenyScopeAbstractUnixSocketEvent) -> Option<ProcessId> = peer_pid;
+}
+
+#[test]
+fn direct_ruleset_version_and_enforcement_accessors() {
+    let ruleset_id = RulesetId::new(0x1_0000_0001).unwrap();
+    let create = CreateRulesetEvent::builder()
+        .timestamp(KernelTimestamp::from_nanoseconds(8))
+        .ruleset_id(ruleset_id)
+        .ruleset_version(3)
+        .handled_fs(FilesystemAccess::from_bits(1))
+        .handled_net(NetworkAccess::from_bits(2))
+        .scoped(ScopeAccess::from_bits(1))
+        .build();
+    let mut state = State::new();
+    state.apply(&Event::CreateRuleset(create));
+    let version: u32 = state.ruleset(ruleset_id).unwrap().max_observed_version();
+    assert_eq!(version, 3);
+
+    let id = DomainId::new(0x1_0000_0002).unwrap();
+    let tid = ThreadId::new(10).unwrap();
     let event = EnforceDomainEvent::builder()
         .timestamp(KernelTimestamp::from_nanoseconds(9))
         .domain_id(id)
-        .enforcing_tid(10)
+        .enforcing_tid(tid)
         .complete(true)
         .process_wide(false)
         .no_new_privs(true)
         .build();
-    let mut state = State::new();
     state.apply(&Event::EnforceDomain(event.clone()));
 
     let domain = state.domain(id).unwrap();
-    let selected: &EnforceDomainEvent = domain.enforcement_event(10).unwrap();
+    let lifecycle: LifecycleState = domain.lifecycle();
+    assert_eq!(lifecycle, LifecycleState::Allocated);
+    let selected: &EnforceDomainEvent = domain.enforcement_event(tid).unwrap();
     assert_eq!(selected, &event);
     let events: Vec<&EnforceDomainEvent> = domain.enforcement_events().collect();
     assert_eq!(selected.domain_id(), id);

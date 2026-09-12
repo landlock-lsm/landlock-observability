@@ -1157,17 +1157,27 @@ mod tests {
     }
 
     #[test]
-    fn malformed_sample_preserves_private_source() {
-        let (sender, receiver) = mpsc::sync_channel(1);
+    fn malformed_samples_preserve_private_sources() {
+        let (sender, receiver) = mpsc::sync_channel(2);
         let running = AtomicBool::new(true);
         let mut queue = DeliveryQueue {
             sender,
             output_full_pending: Arc::new(AtomicBool::new(false)),
         };
         assert_eq!(queue.deliver(&running, &[0]), 0);
-        let error = receiver.try_recv().unwrap().delivery.unwrap_err();
-        assert_eq!(error.kind(), CollectorReceiveErrorKind::MalformedSample);
-        assert!(error.source().is_some());
+        let mut unknown_kind = sample(1);
+        unknown_kind[8] = 0xff;
+        assert_eq!(queue.deliver(&running, &unknown_kind), 0);
+
+        let length = receiver.try_recv().unwrap().delivery.unwrap_err();
+        assert_eq!(length.kind(), CollectorReceiveErrorKind::MalformedSample);
+        assert!(length.source().is_some());
+        let kind = receiver.try_recv().unwrap().delivery.unwrap_err();
+        assert_eq!(kind.kind(), CollectorReceiveErrorKind::MalformedSample);
+        assert_eq!(
+            kind.source().unwrap().to_string(),
+            "unrecognized event kind 255"
+        );
     }
 
     #[test]

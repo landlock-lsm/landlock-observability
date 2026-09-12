@@ -9,8 +9,8 @@ use crate::event::{
     CreateRulesetEvent, DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
     DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, DomainId, DomainMembership,
     EnforceDomainEvent, Event, FilesystemAccess, FreeDomainEvent, FreeRulesetEvent,
-    HierarchySnapshot, KernelTimestamp, LandlockId, LandlockIdKind, NetworkAccess, ScopeAccess,
-    UnknownEvent,
+    HierarchySnapshot, KernelTimestamp, LandlockId, LandlockIdKind, NetworkAccess, ProcessId,
+    ScopeAccess, ThreadId,
 };
 
 const RECORD_SIZE: usize = 344;
@@ -70,13 +70,25 @@ pub(crate) enum DecodeError {
         /// The inclusive maximum valid length.
         maximum: usize,
     },
-    /// An ID field is below the kernel-assigned ID range, including zero.
+    /// A Landlock ID field is below the kernel-assigned range, including zero.
     #[non_exhaustive]
     Id {
         /// The semantic field name.
         field: &'static str,
         /// The invalid field value.
         value: u64,
+    },
+    /// A mandatory process or thread ID field is zero.
+    #[non_exhaustive]
+    TaskId {
+        /// The semantic field name.
+        field: &'static str,
+    },
+    /// The private producer record has an unrecognized event kind.
+    #[non_exhaustive]
+    EventKind {
+        /// The unrecognized numeric kind.
+        value: u8,
     },
     /// A fixed field could not be read from an otherwise sized record.
     #[non_exhaustive]
@@ -106,6 +118,8 @@ impl fmt::Display for DecodeError {
                 "invalid abstract UNIX socket name length {value}, maximum is {maximum}"
             ),
             Self::Id { field, value } => write!(formatter, "invalid Landlock ID {field}: {value}"),
+            Self::TaskId { field } => write!(formatter, "invalid task ID {field}: 0"),
+            Self::EventKind { value } => write!(formatter, "unrecognized event kind {value}"),
             Self::Field { field } => write!(formatter, "invalid field {field}"),
         }
     }
@@ -218,6 +232,18 @@ fn id<K: LandlockIdKind>(value: u64, field: &'static str) -> Result<LandlockId<K
     LandlockId::new(value).map_err(|_| DecodeError::Id { field, value })
 }
 
+fn process_id(value: u32, field: &'static str) -> Result<ProcessId, DecodeError> {
+    ProcessId::new(value).map_err(|_| DecodeError::TaskId { field })
+}
+
+fn thread_id(value: u32, field: &'static str) -> Result<ThreadId, DecodeError> {
+    ThreadId::new(value).map_err(|_| DecodeError::TaskId { field })
+}
+
+fn optional_process_id(value: u32) -> Option<ProcessId> {
+    ProcessId::new(value).ok()
+}
+
 fn parent(value: u64, field: &'static str) -> Result<Option<DomainId>, DecodeError> {
     if value == 0 {
         Ok(None)
@@ -240,7 +266,10 @@ fn denial_context(data: &[u8]) -> Result<DenialContext, DecodeError> {
             HierarchySnapshot::builder()
                 .domain_id(id(u64_at(data, UNION_OFFSET, "domain_id")?, "domain_id")?)
                 .parent_id(parent(u64_at(data, 24, "parent_id")?, "parent_id")?)
-                .creator_tgid(u32_at(data, 32, "creator_tgid")?)
+                .creator_tgid(process_id(
+                    u32_at(data, 32, "creator_tgid")?,
+                    "creator_tgid",
+                )?)
                 .creator_comm(command_at(data, 36, "creator_comm")?)
                 .build(),
         )
@@ -311,7 +340,10 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
                 .ruleset_version(u32_at(data, 24, "ruleset_version")?)
                 .domain_id(id(u64_at(data, 32, "domain_id")?, "domain_id")?)
                 .parent_id(parent(u64_at(data, 40, "parent_id")?, "parent_id")?)
-                .creator_tgid(u32_at(data, 48, "creator_tgid")?)
+                .creator_tgid(process_id(
+                    u32_at(data, 48, "creator_tgid")?,
+                    "creator_tgid",
+                )?)
                 .creator_comm(command_at(data, 52, "creator_comm")?)
                 .build(),
         ),
@@ -349,7 +381,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
                     u64_at(data, 72, "tracee_domain")?,
                     "tracee_domain",
                 )?)
-                .tracee_pid(u32_at(data, 80, "tracee_pid")?)
+                .tracee_pid(process_id(u32_at(data, 80, "tracee_pid")?, "tracee_pid")?)
                 .tracee_comm(command_at(data, 84, "tracee_comm")?)
                 .build(),
         ),
@@ -361,7 +393,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
                     u64_at(data, 72, "target_domain")?,
                     "target_domain",
                 )?)
-                .target_pid(u32_at(data, 80, "target_pid")?)
+                .target_pid(process_id(u32_at(data, 80, "target_pid")?, "target_pid")?)
                 .target_comm(command_at(data, 84, "target_comm")?)
                 .build(),
         ),
@@ -373,7 +405,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
                     u64_at(data, 72, "peer_domain")?,
                     "peer_domain",
                 )?)
-                .peer_pid(u32_at(data, 80, "peer_pid")?)
+                .peer_pid(optional_process_id(u32_at(data, 80, "peer_pid")?))
                 .abstract_name(abstract_unix_socket_name_at(data, 84, 88)?)
                 .build(),
         ),
@@ -395,19 +427,16 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
             EnforceDomainEvent::builder()
                 .timestamp(timestamp)
                 .domain_id(id(u64_at(data, 16, "domain_id")?, "domain_id")?)
-                .enforcing_tid(u32_at(data, 24, "enforcing_tid")?)
+                .enforcing_tid(thread_id(
+                    u32_at(data, 24, "enforcing_tid")?,
+                    "enforcing_tid",
+                )?)
                 .complete(boolean_at(data, 28, "complete")?)
                 .process_wide(boolean_at(data, 29, "process_wide")?)
                 .no_new_privs(boolean_at(data, 30, "no_new_privs")?)
                 .build(),
         ),
-        _ => Event::Unknown(
-            UnknownEvent::builder()
-                .timestamp(timestamp)
-                .numeric_kind(event_type)
-                .record_length(data.len())
-                .build(),
-        ),
+        _ => return Err(DecodeError::EventKind { value: event_type }),
     };
     Ok(event)
 }
@@ -456,6 +485,14 @@ mod tests {
         CapturedBytes::new(bytes.as_ref().to_vec(), bytes_omitted).unwrap()
     }
 
+    fn pid(value: u32) -> ProcessId {
+        ProcessId::new(value).unwrap()
+    }
+
+    fn tid(value: u32) -> ThreadId {
+        ThreadId::new(value).unwrap()
+    }
+
     fn context(
         domain_id: u64,
         parent_id: Option<u64>,
@@ -470,7 +507,7 @@ mod tests {
                 HierarchySnapshot::builder()
                     .domain_id(DomainId::new(domain_id).unwrap())
                     .parent_id(parent_id.map(|parent_id| DomainId::new(parent_id).unwrap()))
-                    .creator_tgid(creator_tgid)
+                    .creator_tgid(pid(creator_tgid))
                     .creator_comm(creator_comm)
                     .build(),
             )
@@ -517,7 +554,6 @@ mod tests {
             Event::FreeDomain(value) => generic_timestamp(value),
             Event::FreeRuleset(value) => generic_timestamp(value),
             Event::EnforceDomain(value) => generic_timestamp(value),
-            Event::Unknown(value) => generic_timestamp(value),
         };
         assert_eq!(generic_timestamp(event), timestamp);
     }
@@ -527,13 +563,6 @@ mod tests {
         for fixture in FIXTURES {
             assert_concrete_trait_dispatch(&decode(fixture).unwrap());
         }
-        assert_concrete_trait_dispatch(&Event::Unknown(
-            UnknownEvent::builder()
-                .timestamp(KernelTimestamp::from_nanoseconds(13))
-                .numeric_kind(255)
-                .record_length(RECORD_SIZE)
-                .build(),
-        ));
     }
 
     #[test]
@@ -576,7 +605,7 @@ mod tests {
                     .ruleset_version(0x45000004)
                     .domain_id(DomainId::new(0xD400000000000004).unwrap())
                     .parent_id(None)
-                    .creator_tgid(0x56000004)
+                    .creator_tgid(pid(0x56000004))
                     .creator_comm(captured(b"15-byte-command", false))
                     .build(),
             ),
@@ -628,7 +657,7 @@ mod tests {
                         true,
                     ))
                     .tracee_domain(DomainMembership::Unsandboxed)
-                    .tracee_pid(0x86000007)
+                    .tracee_pid(pid(0x86000007))
                     .tracee_comm(captured(b"ptrace-target", false))
                     .build(),
             ),
@@ -647,7 +676,7 @@ mod tests {
                     .target_domain(DomainMembership::Sandboxed(
                         DomainId::new(0xE800000000000008).unwrap(),
                     ))
-                    .target_pid(0x97000008)
+                    .target_pid(pid(0x97000008))
                     .target_comm(captured(b"signal-target", false))
                     .build(),
             ),
@@ -666,7 +695,7 @@ mod tests {
                     .peer_domain(DomainMembership::Sandboxed(
                         DomainId::new(0xE900000000000009).unwrap(),
                     ))
-                    .peer_pid(0xA8000009)
+                    .peer_pid(Some(pid(0xA8000009)))
                     .abstract_name(captured(b"service\0\xff\0", false))
                     .build(),
             ),
@@ -688,7 +717,7 @@ mod tests {
                 EnforceDomainEvent::builder()
                     .timestamp(KernelTimestamp::from_nanoseconds(0xCC0000000000000C))
                     .domain_id(DomainId::new(0xDC0000000000000C).unwrap())
-                    .enforcing_tid(0xCD00000C)
+                    .enforcing_tid(tid(0xCD00000C))
                     .complete(true)
                     .process_wide(false)
                     .no_new_privs(true)
@@ -720,7 +749,7 @@ mod tests {
             value.hierarchy().parent_id(),
             parent_id.map(|parent_id| DomainId::new(parent_id).unwrap())
         );
-        assert_eq!(value.hierarchy().creator_tgid(), creator_tgid);
+        assert_eq!(value.hierarchy().creator_tgid().get(), creator_tgid);
         assert_eq!(value.hierarchy().creator_comm().as_bytes(), creator_comm.0);
         assert_eq!(
             value.hierarchy().creator_comm().bytes_omitted(),
@@ -786,7 +815,7 @@ mod tests {
             DomainId::new(0xD400000000000004).unwrap()
         );
         assert_eq!(value.parent_id(), None);
-        assert_eq!(value.creator_tgid(), 0x56000004);
+        assert_eq!(value.creator_tgid().get(), 0x56000004);
         assert_eq!(value.creator_comm().as_bytes(), b"15-byte-command");
 
         let Event::DenyAccessFs(value) = decode(FIXTURES[4]).unwrap() else {
@@ -838,7 +867,7 @@ mod tests {
             (true, true),
         );
         assert_eq!(value.tracee_domain(), DomainMembership::Unsandboxed);
-        assert_eq!(value.tracee_pid(), 0x86000007);
+        assert_eq!(value.tracee_pid().get(), 0x86000007);
         assert_eq!(value.tracee_comm().as_bytes(), b"ptrace-target");
 
         let Event::DenyScopeSignal(value) = decode(FIXTURES[7]).unwrap() else {
@@ -858,7 +887,7 @@ mod tests {
             value.target_domain(),
             DomainMembership::Sandboxed(DomainId::new(0xE800000000000008).unwrap())
         );
-        assert_eq!(value.target_pid(), 0x97000008);
+        assert_eq!(value.target_pid().get(), 0x97000008);
         assert_eq!(value.target_comm().as_bytes(), b"signal-target");
 
         let Event::DenyScopeAbstractUnixSocket(value) = decode(FIXTURES[8]).unwrap() else {
@@ -878,7 +907,7 @@ mod tests {
             value.peer_domain(),
             DomainMembership::Sandboxed(DomainId::new(0xE900000000000009).unwrap())
         );
-        assert_eq!(value.peer_pid(), 0xA8000009);
+        assert_eq!(value.peer_pid().map(ProcessId::get), Some(0xA8000009));
         assert_eq!(value.abstract_name().as_bytes(), b"service\0\xff\0");
 
         let Event::FreeDomain(value) = decode(FIXTURES[9]).unwrap() else {
@@ -909,7 +938,7 @@ mod tests {
             value.domain_id(),
             DomainId::new(0xDC0000000000000C).unwrap()
         );
-        assert_eq!(value.enforcing_tid(), 0xCD00000C);
+        assert_eq!(value.enforcing_tid().get(), 0xCD00000C);
         assert!(value.complete());
         assert!(!value.process_wide());
         assert!(value.no_new_privs());
@@ -950,24 +979,12 @@ mod tests {
     }
 
     #[test]
-    fn preserves_unknown_kind_facts() {
+    fn rejects_unknown_private_event_kind() {
         let mut data = *FIXTURES[0];
         data[TYPE_OFFSET] = 0xF3;
-        let event = decode(&data).unwrap();
-        assert_eq!(
-            event.timestamp(),
-            KernelTimestamp::from_nanoseconds(0x1100000000000001)
-        );
-        assert_eq!(
-            event,
-            Event::Unknown(
-                UnknownEvent::builder()
-                    .timestamp(KernelTimestamp::from_nanoseconds(0x1100000000000001))
-                    .numeric_kind(0xF3)
-                    .record_length(RECORD_SIZE)
-                    .build()
-            )
-        );
+        let error = DecodeError::EventKind { value: 0xF3 };
+        assert_eq!(decode(&data), Err(error.clone()));
+        assert_eq!(error.to_string(), "unrecognized event kind 243");
     }
 
     #[test]
@@ -1030,6 +1047,39 @@ mod tests {
             panic!()
         };
         assert_eq!(unsandboxed.target_domain(), DomainMembership::Unsandboxed);
+    }
+
+    #[test]
+    fn validates_mandatory_task_ids_and_optional_peer_pid() {
+        for (fixture, offset, field) in [
+            (3, 48, "creator_tgid"),
+            (4, 32, "creator_tgid"),
+            (5, 32, "creator_tgid"),
+            (6, 32, "creator_tgid"),
+            (7, 32, "creator_tgid"),
+            (8, 32, "creator_tgid"),
+            (6, 80, "tracee_pid"),
+            (7, 80, "target_pid"),
+            (11, 24, "enforcing_tid"),
+        ] {
+            let mut data = *FIXTURES[fixture];
+            data[offset..offset + size_of::<u32>()].copy_from_slice(&0_u32.to_ne_bytes());
+            assert_eq!(decode(&data), Err(DecodeError::TaskId { field }));
+        }
+        assert_eq!(
+            DecodeError::TaskId {
+                field: "tracee_pid"
+            }
+            .to_string(),
+            "invalid task ID tracee_pid: 0"
+        );
+
+        let mut data = *FIXTURES[8];
+        data[80..84].copy_from_slice(&0_u32.to_ne_bytes());
+        let Event::DenyScopeAbstractUnixSocket(event) = decode(&data).unwrap() else {
+            panic!()
+        };
+        assert_eq!(event.peer_pid(), None);
     }
 
     #[test]

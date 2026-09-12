@@ -115,6 +115,11 @@ static __always_inline void fill_deny_header(__u64 *domain_id, __u64 *parent_id,
 
 	parent = BPF_CORE_READ(h, parent);
 	*parent_id = parent ? BPF_CORE_READ(parent, id) : 0;
+	/*
+	 * Successful domain creation guarantees details and a referenced TGID.
+	 * Keep the null checks for safe BPF pointer chasing; userspace rejects
+	 * a defensive zero creator TGID as a malformed sample.
+	 */
 	details = BPF_CORE_READ(h, details);
 	if (details) {
 		const struct pid *pid_struct = BPF_CORE_READ(details, pid);
