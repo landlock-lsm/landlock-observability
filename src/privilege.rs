@@ -202,15 +202,16 @@ fn clear_bounding() -> Result<(), PrivilegeError> {
     })
 }
 
-fn capability(index: u32) -> CapabilitySet {
-    CapabilitySet::from_bits_retain(1_u64 << index)
+fn capability(index: u32) -> Option<CapabilitySet> {
+    1_u64
+        .checked_shl(index)
+        .map(CapabilitySet::from_bits_retain)
 }
 
 fn each_supported_capability(
     mut action: impl FnMut(CapabilitySet) -> Result<(), PrivilegeError>,
 ) -> Result<(), PrivilegeError> {
-    for index in 0..KNOWN_CAPABILITY_BITS {
-        let capability = capability(index);
+    for capability in (0..KNOWN_CAPABILITY_BITS).map_while(capability) {
         if bounding_contains(capability)?.is_none() {
             break;
         }
@@ -470,6 +471,13 @@ fn finish_policy_with<O: FinalizationOps>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capability_bit_shifts_are_checked() {
+        assert!(capability(KNOWN_CAPABILITY_BITS.saturating_sub(1)).is_some());
+        assert!(capability(KNOWN_CAPABILITY_BITS).is_none());
+        assert!(capability(u32::MAX).is_none());
+    }
 
     #[test]
     fn detects_an_additional_thread() {

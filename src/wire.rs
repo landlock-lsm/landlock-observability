@@ -134,14 +134,26 @@ impl Error for DecodeError {
     }
 }
 
+fn slice_at<'a>(
+    data: &'a [u8],
+    offset: usize,
+    size: usize,
+    field: &'static str,
+) -> Result<&'a [u8], DecodeError> {
+    let end = offset
+        .checked_add(size)
+        .ok_or(DecodeError::Field { field })?;
+    data.get(offset..end).ok_or(DecodeError::Field { field })
+}
+
 fn bytes<const N: usize>(
     data: &[u8],
     offset: usize,
     field: &'static str,
 ) -> Result<[u8; N], DecodeError> {
-    data.get(offset..offset + N)
-        .and_then(|value| value.try_into().ok())
-        .ok_or(DecodeError::Field { field })
+    slice_at(data, offset, N, field)?
+        .try_into()
+        .map_err(|_| DecodeError::Field { field })
 }
 
 fn u32_at(data: &[u8], offset: usize, field: &'static str) -> Result<u32, DecodeError> {
@@ -161,7 +173,8 @@ fn captured_c_string<K: CapturedBytesOrigin>(
         .iter()
         .position(|byte| *byte == 0)
         .unwrap_or(value.len());
-    CapturedBytes::new(value[..end].to_vec(), bytes_omitted)
+    let value = value.get(..end).ok_or(DecodeError::Field { field })?;
+    CapturedBytes::new(value.to_vec(), bytes_omitted)
         .map_err(|source| DecodeError::CapturedBytes { field, source })
 }
 
@@ -173,9 +186,7 @@ fn captured_at<K: CapturedBytesOrigin>(
     field: &'static str,
     omitted_field: &'static str,
 ) -> Result<CapturedBytes<K>, DecodeError> {
-    let value = data
-        .get(offset..offset + size)
-        .ok_or(DecodeError::Field { field })?;
+    let value = slice_at(data, offset, size, field)?;
     let bytes_omitted = boolean_at(data, omitted_offset, omitted_field)?;
     captured_c_string(value, bytes_omitted, field)
 }
@@ -195,9 +206,7 @@ fn abstract_unix_socket_name_at(
         });
     }
     let length = length as usize;
-    let value = data
-        .get(name_offset..name_offset + length)
-        .ok_or(DecodeError::Field { field: FIELD })?;
+    let value = slice_at(data, name_offset, length, FIELD)?;
     CapturedAbstractUnixSocketName::new(value.to_vec(), false).map_err(|source| {
         DecodeError::CapturedBytes {
             field: FIELD,
@@ -211,9 +220,7 @@ fn command_at(
     offset: usize,
     field: &'static str,
 ) -> Result<CapturedCommand, DecodeError> {
-    let value = data
-        .get(offset..offset + COMM_SIZE)
-        .ok_or(DecodeError::Field { field })?;
+    let value = slice_at(data, offset, COMM_SIZE, field)?;
     // Kernel command sources are NUL-terminated TASK_COMM_LEN arrays, so the
     // complete command always fits in the fixed field.
     captured_c_string(value, false, field)
@@ -288,7 +295,9 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
         });
     }
 
-    let event_type = data[TYPE_OFFSET];
+    let event_type = *data.get(TYPE_OFFSET).ok_or(DecodeError::Field {
+        field: "event_type",
+    })?;
     let timestamp = KernelTimestamp::from_nanoseconds(u64_at(data, TIMESTAMP_OFFSET, "timestamp")?);
 
     let event = match event_type {
@@ -991,6 +1000,12 @@ mod tests {
     fn checked_field_errors_expose_only_semantic_context() {
         assert_eq!(
             bytes::<8>(&[0; 7], 0, "semantic_field"),
+            Err(DecodeError::Field {
+                field: "semantic_field"
+            })
+        );
+        assert_eq!(
+            bytes::<1>(&[0], usize::MAX, "semantic_field"),
             Err(DecodeError::Field {
                 field: "semantic_field"
             })

@@ -248,7 +248,10 @@ let event = Event::FreeDomain(
 let mut state = State::new();
 let mut denials = DenialAggregator::new();
 process(&event, &mut state, &mut denials);
-assert_eq!(state.domain(id).unwrap().lifecycle(), LifecycleState::Deallocated);
+let domain = state
+    .domain(id)
+    .ok_or_else(|| std::io::Error::other("free event did not create domain state"))?;
+assert_eq!(domain.lifecycle(), LifecycleState::Deallocated);
 assert!(denials.is_empty());
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
@@ -260,7 +263,7 @@ following example does not imply that an unprivileged process can start it:
 use landlock_observability::collector::CollectorConfig;
 use landlock_observability::privilege;
 use std::error::Error;
-use std::io;
+use std::io::{self, Write};
 use std::thread;
 use std::time::Duration;
 
@@ -273,7 +276,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .spawn(move || worker.run())?;
     let result: Result<(), Box<dyn Error>> = (|| {
         let event = collector.recv_timeout(Duration::from_secs(1))?;
-        println!("{event:?}");
+        let mut stdout = io::stdout().lock();
+        writeln!(stdout, "{event:?}")?;
+        stdout.flush()?;
         Ok(())
     })();
     drop(collector);

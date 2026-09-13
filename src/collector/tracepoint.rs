@@ -69,12 +69,20 @@ fn generation_1_target_mask() -> Result<u16, Error> {
     Ok(mask)
 }
 
+fn generation_1_target_bit(index: usize) -> Option<u16> {
+    u32::try_from(index)
+        .ok()
+        .and_then(|index| 1_u16.checked_shl(index))
+}
+
 fn mark_generation_1_target(mask: &mut u16, name: &OsStr) {
     if let Some(index) = GENERATION_1_TARGETS
         .iter()
         .position(|target| name.as_encoded_bytes() == *target)
     {
-        *mask |= 1 << index;
+        if let Some(bit) = generation_1_target_bit(index) {
+            *mask |= bit;
+        }
     }
 }
 
@@ -84,6 +92,10 @@ mod tests {
 
     #[test]
     fn generation_1_targets_form_one_complete_bitset() {
+        assert_eq!(generation_1_target_bit(15), Some(1 << 15));
+        assert_eq!(generation_1_target_bit(16), None);
+        assert_eq!(generation_1_target_bit(usize::MAX), None);
+
         let mut mask = 0;
         for target in GENERATION_1_TARGETS {
             mark_generation_1_target(&mut mask, OsStr::new(std::str::from_utf8(target).unwrap()));

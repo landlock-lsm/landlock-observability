@@ -512,6 +512,17 @@ fn worker_receive_panic(payload: Box<dyn Any + Send + 'static>) -> CollectorRece
     )
 }
 type PanicPayload = Box<dyn Any + Send + 'static>;
+fn callback_panic_state(
+    panic: &Mutex<Option<PanicPayload>>,
+) -> std::sync::MutexGuard<'_, Option<PanicPayload>> {
+    // Poisoning cannot invalidate this one-slot mailbox. Recovering also
+    // prevents callback-panic handling from introducing a second panic, which
+    // could otherwise unwind through libbpf's C trampoline.
+    match panic.lock() {
+        Ok(state) => state,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
 fn catch_callback_panic(
     panic: &Mutex<Option<PanicPayload>>,
     callback: impl FnOnce() -> i32,
@@ -519,25 +530,32 @@ fn catch_callback_panic(
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback)) {
         Ok(result) => result,
         Err(payload) => {
-            *panic.lock().expect("callback panic state is not poisoned") = Some(payload);
+            if let Some(previous) = callback_panic_state(panic).replace(payload) {
+                suppress_panic_payload(previous);
+            }
             -1
         }
     }
 }
-fn callback_panicked(panic: &Mutex<Option<PanicPayload>>) -> bool {
-    panic
-        .lock()
-        .expect("callback panic state is not poisoned")
-        .is_some()
+fn take_callback_panic(panic: &Mutex<Option<PanicPayload>>) -> Option<PanicPayload> {
+    callback_panic_state(panic).take()
 }
-fn resume_callback_panic(panic: &Mutex<Option<PanicPayload>>) {
-    let payload = panic
-        .lock()
-        .expect("callback panic state is not poisoned")
-        .take();
-    if let Some(payload) = payload {
-        std::panic::resume_unwind(payload);
+fn report_callback_panic(
+    terminal: &mpsc::SyncSender<CollectorReceiveError>,
+    output_full_pending: &AtomicBool,
+    panic: &Mutex<Option<PanicPayload>>,
+) -> bool {
+    let Some(payload) = take_callback_panic(panic) else {
+        return false;
+    };
+    if output_full_pending.swap(false, Ordering::AcqRel) {
+        let _ = terminal.try_send(receive_error(
+            CollectorReceiveErrorKind::OutputQueueFull,
+            "one or more delivery entries were omitted",
+        ));
     }
+    let _ = terminal.try_send(worker_receive_panic(payload));
+    true
 }
 
 type Delivery = Result<Event, CollectorReceiveError>;
@@ -892,21 +910,21 @@ fn run_worker(
     running: Arc<AtomicBool>,
     resources: Option<PreparedResources>,
 ) {
-    let resources = resources.expect("prepared collector resources are present");
+    let Some(resources) = resources else {
+        return;
+    };
     while running.load(Ordering::Acquire) {
         let result = resources.ring.poll(POLL_INTERVAL);
-        // The callback is invoked through an extern-C frame, so resume a caught
-        // panic only after control has returned to Rust. Preserve an already
-        // pending queue-loss notice before that terminal panic.
-        if callback_panicked(&resources.callback_panic)
-            && resources.output_full_pending.swap(false, Ordering::AcqRel)
-        {
-            let _ = terminal.try_send(receive_error(
-                CollectorReceiveErrorKind::OutputQueueFull,
-                "one or more delivery entries were omitted",
-            ));
+        // The callback is invoked through an extern-C frame, so inspect a
+        // caught panic only after control has returned to Rust. Preserve an
+        // already pending queue-loss notice before that terminal panic.
+        if report_callback_panic(
+            &terminal,
+            &resources.output_full_pending,
+            &resources.callback_panic,
+        ) {
+            return;
         }
-        resume_callback_panic(&resources.callback_panic);
         if let Err(error) = result {
             if running.load(Ordering::Acquire) {
                 if resources.output_full_pending.load(Ordering::Acquire) {
@@ -1247,21 +1265,117 @@ mod tests {
     }
 
     #[test]
-    fn callback_panic_resumes_only_after_the_callback_returns() {
+    fn worker_without_prepared_resources_returns_cleanly() {
+        let (deliveries, delivery_receiver) = mpsc::sync_channel(1);
+        let (terminal, terminal_receiver) = mpsc::sync_channel(1);
+        run_worker(deliveries, terminal, Arc::new(AtomicBool::new(true)), None);
+
+        assert!(matches!(
+            delivery_receiver.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            terminal_receiver.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn callback_panic_is_retained_after_the_callback_returns() {
         let panic = Mutex::new(None);
         let result = catch_callback_panic(&panic, || panic!("callback panic"));
         assert_eq!(result, -1);
-        assert!(callback_panicked(&panic));
 
-        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            resume_callback_panic(&panic);
-        }))
-        .unwrap_err();
+        let payload = take_callback_panic(&panic).unwrap();
         assert_eq!(
             CollectorWorkerPanic::from_payload(payload).message(),
             Some("callback panic")
         );
-        assert!(panic.lock().unwrap().is_none());
+        assert!(take_callback_panic(&panic).is_none());
+    }
+
+    #[test]
+    fn callback_panic_report_follows_pending_queue_loss() {
+        let panic_state = Mutex::new(None);
+        assert_eq!(
+            catch_callback_panic(&panic_state, || panic!("callback panic")),
+            -1
+        );
+        let output_full_pending = AtomicBool::new(true);
+        let (terminal, receive) = mpsc::sync_channel(2);
+
+        assert!(report_callback_panic(
+            &terminal,
+            &output_full_pending,
+            &panic_state
+        ));
+        assert!(!output_full_pending.load(Ordering::Acquire));
+        assert_eq!(
+            receive.recv().unwrap().kind(),
+            CollectorReceiveErrorKind::OutputQueueFull
+        );
+        let panic_error = receive.recv().unwrap();
+        assert_eq!(panic_error.kind(), CollectorReceiveErrorKind::WorkerPanic);
+        assert_eq!(
+            panic_error
+                .source()
+                .unwrap()
+                .downcast_ref::<CollectorWorkerPanic>()
+                .unwrap()
+                .message(),
+            Some("callback panic")
+        );
+        assert!(!report_callback_panic(
+            &terminal,
+            &output_full_pending,
+            &panic_state
+        ));
+    }
+
+    #[test]
+    fn replacing_a_hostile_callback_payload_does_not_unwind() {
+        struct PanicOnDrop;
+
+        impl Drop for PanicOnDrop {
+            fn drop(&mut self) {
+                panic!("panic payload dropped");
+            }
+        }
+
+        let panic_state = Mutex::new(None);
+        assert_eq!(
+            catch_callback_panic(&panic_state, || std::panic::panic_any(PanicOnDrop)),
+            -1
+        );
+        let replacement = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            catch_callback_panic(&panic_state, || panic!("replacement panic"))
+        }));
+        assert_eq!(replacement.unwrap(), -1);
+        let payload = take_callback_panic(&panic_state).unwrap();
+        assert_eq!(
+            CollectorWorkerPanic::from_payload(payload).message(),
+            Some("replacement panic")
+        );
+    }
+
+    #[test]
+    fn poisoned_callback_panic_state_remains_usable() {
+        let panic = Mutex::new(None);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _state = panic.lock().unwrap();
+            panic!("poison callback panic state");
+        }));
+        assert!(panic.is_poisoned());
+
+        assert_eq!(
+            catch_callback_panic(&panic, || panic!("callback panic")),
+            -1
+        );
+        let payload = take_callback_panic(&panic).unwrap();
+        assert_eq!(
+            CollectorWorkerPanic::from_payload(payload).message(),
+            Some("callback panic")
+        );
     }
 
     #[test]

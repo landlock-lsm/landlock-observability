@@ -1,5 +1,23 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// Runtime code must not introduce non-allocation panics; test assertions are exempt.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::arithmetic_side_effects,
+        clippy::dbg_macro,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::print_stderr,
+        clippy::print_stdout,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unreachable,
+        clippy::unwrap_used
+    )
+)]
+
 //! Reusable observability for Landlock.
 //!
 //! # Memory use

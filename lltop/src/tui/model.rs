@@ -37,17 +37,18 @@ impl ObservationModel {
                 .as_nanoseconds()
                 .max(event.timestamp().as_nanoseconds()),
         );
-        let kind = match event {
-            Event::DenyAccessFs(_) => Some(0),
-            Event::DenyAccessNet(_) => Some(1),
-            Event::DenyPtrace(_) => Some(2),
-            Event::DenyScopeSignal(_) => Some(3),
-            Event::DenyScopeAbstractUnixSocket(_) => Some(4),
+        let [fs, net, ptrace, signal, abstract_unix] = &mut self.stats.by_kind;
+        let count = match event {
+            Event::DenyAccessFs(_) => Some(fs),
+            Event::DenyAccessNet(_) => Some(net),
+            Event::DenyPtrace(_) => Some(ptrace),
+            Event::DenyScopeSignal(_) => Some(signal),
+            Event::DenyScopeAbstractUnixSocket(_) => Some(abstract_unix),
             _ => None,
         };
-        if let Some(kind) = kind {
+        if let Some(count) = count {
             self.stats.total = self.stats.total.saturating_add(1);
-            self.stats.by_kind[kind] = self.stats.by_kind[kind].saturating_add(1);
+            *count = count.saturating_add(1);
         }
         self.state.apply(event);
         self.denials.observe(event);
@@ -99,20 +100,24 @@ impl ObservationModel {
 
         fn append(
             id: DomainId,
+            trail: Vec<bool>,
             children: &HashMap<Option<DomainId>, Vec<DomainId>>,
-            trail: &mut Vec<bool>,
             visited: &mut HashSet<DomainId>,
             output: &mut Vec<(DomainId, Vec<bool>)>,
         ) {
-            if !visited.insert(id) {
-                return;
-            }
-            output.push((id, trail.clone()));
-            if let Some(descendants) = children.get(&Some(id)) {
-                for (index, child) in descendants.iter().enumerate() {
-                    trail.push(index + 1 == descendants.len());
-                    append(*child, children, trail, visited, output);
-                    trail.pop();
+            let mut pending = vec![(id, trail)];
+            while let Some((id, trail)) = pending.pop() {
+                if !visited.insert(id) {
+                    continue;
+                }
+                output.push((id, trail.clone()));
+                if let Some(descendants) = children.get(&Some(id)) {
+                    let last = descendants.len().saturating_sub(1);
+                    for (index, child) in descendants.iter().enumerate().rev() {
+                        let mut child_trail = trail.clone();
+                        child_trail.push(index == last);
+                        pending.push((*child, child_trail));
+                    }
                 }
             }
         }
@@ -120,11 +125,12 @@ impl ObservationModel {
         let mut output = Vec::new();
         let mut visited = HashSet::new();
         let roots = children.get(&None).cloned().unwrap_or_default();
+        let last_root = roots.len().saturating_sub(1);
         for (index, root) in roots.iter().enumerate() {
             append(
                 *root,
+                vec![index == last_root],
                 &children,
-                &mut vec![index + 1 == roots.len()],
                 &mut visited,
                 &mut output,
             );
@@ -133,7 +139,7 @@ impl ObservationModel {
         remaining.sort_unstable_by_key(|id| id.get());
         for id in remaining {
             if !visited.contains(&id) {
-                append(id, &children, &mut vec![true], &mut visited, &mut output);
+                append(id, vec![true], &children, &mut visited, &mut output);
             }
         }
         output
@@ -208,6 +214,24 @@ mod tests {
                     vec![false, true]
                 ),
                 (DomainId::new(MIN_LANDLOCK_ID + 5).unwrap(), vec![true]),
+            ]
+        );
+    }
+
+    #[test]
+    fn cyclic_observations_are_rendered_once_without_recursion() {
+        let mut model = ObservationModel::new();
+        model.observe(&create(1, Some(2)));
+        model.observe(&create(2, Some(1)));
+
+        assert_eq!(
+            model.domain_tree(),
+            [
+                (DomainId::new(MIN_LANDLOCK_ID + 1).unwrap(), vec![true]),
+                (
+                    DomainId::new(MIN_LANDLOCK_ID + 2).unwrap(),
+                    vec![true, true]
+                ),
             ]
         );
     }

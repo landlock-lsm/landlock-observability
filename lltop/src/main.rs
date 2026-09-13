@@ -1,5 +1,23 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// Runtime code must not introduce non-allocation panics; test assertions are exempt.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::arithmetic_side_effects,
+        clippy::dbg_macro,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::print_stderr,
+        clippy::print_stdout,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unreachable,
+        clippy::unwrap_used
+    )
+)]
+
 mod batch;
 mod tui;
 
@@ -33,11 +51,19 @@ fn parse_mode() -> Result<Mode, String> {
     }
 }
 
+fn write_diagnostic<W: Write, E: fmt::Display + ?Sized>(
+    output: &mut W,
+    prefix: &str,
+    error: &E,
+) -> io::Result<()> {
+    writeln!(output, "lltop: {prefix}{error}")?;
+    output.flush()
+}
+
 fn run_batch(mut collector: Collector) -> Result<(), Box<dyn Error>> {
     let mut stderr = io::stderr().lock();
     writeln!(stderr, "{READY_SIGNAL}")?;
     stderr.flush()?;
-    drop(stderr);
 
     let mut batch = Batch::new();
     let mut stdout = io::stdout().lock();
@@ -48,7 +74,7 @@ fn run_batch(mut collector: Collector) -> Result<(), Box<dyn Error>> {
             Err(ReceiveTimeoutError::Collector(error)) => match error.kind() {
                 CollectorReceiveErrorKind::OutputQueueFull
                 | CollectorReceiveErrorKind::MalformedSample => {
-                    eprintln!("lltop: warning: {error}")
+                    write_diagnostic(&mut stderr, "warning: ", &error)?;
                 }
                 CollectorReceiveErrorKind::PollFailure
                 | CollectorReceiveErrorKind::WorkerPanic
@@ -62,9 +88,9 @@ fn run_batch(mut collector: Collector) -> Result<(), Box<dyn Error>> {
 
 fn join_worker(worker: JoinHandle<()>) -> Result<(), Box<dyn Error>> {
     worker.join().map_err(|payload| {
-        // CollectorWorker::run() contains panics, so reaching this path means
-        // its outer lifecycle failed. Do not inspect or drop an arbitrary
-        // hostile panic payload.
+        // CollectorWorker::run() normally contains worker panics, so reaching
+        // this path means its outer lifecycle failed. Do not inspect or drop an
+        // arbitrary hostile panic payload.
         std::mem::forget(payload);
         Box::<dyn Error>::from(io::Error::other("collector worker thread panicked"))
     })
@@ -122,7 +148,8 @@ fn run() -> Result<(), Box<dyn Error>> {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("lltop: {error}");
+        let mut stderr = io::stderr().lock();
+        let _ = write_diagnostic(&mut stderr, "", error.as_ref());
         std::process::exit(1);
     }
 }
@@ -144,6 +171,13 @@ mod tests {
 
     fn failure(diagnosis: &'static str) -> Result<(), Box<dyn Error>> {
         Err(Box::new(TestError(diagnosis)))
+    }
+
+    #[test]
+    fn diagnostics_use_fallible_writes_and_flushes() {
+        let mut output = Vec::new();
+        write_diagnostic(&mut output, "warning: ", &TestError("problem")).unwrap();
+        assert_eq!(output, b"lltop: warning: problem\n");
     }
 
     #[test]
