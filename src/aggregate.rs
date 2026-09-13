@@ -479,10 +479,7 @@ impl DenialAggregator {
         let sequence = self.next_ingestion_sequence();
 
         if self.entries.contains_key(&key) {
-            let entry = self
-                .entries
-                .get_mut(&key)
-                .expect("a checked aggregation entry remains present");
+            let entry = self.entries.get_mut(&key)?;
             entry.occurrence_count = entry.occurrence_count.saturating_add(1);
             entry.latest_timestamp = event.timestamp();
             entry.same_exec = same_exec;
@@ -492,13 +489,12 @@ impl DenialAggregator {
             return Some(entry);
         }
 
-        if self.entries.len() == self.capacity {
+        if self.entries.len() >= self.capacity {
             let least_recent_key = self
                 .entries
                 .iter()
                 .min_by_key(|(_, entry)| entry.last_observed_sequence)
-                .map(|(key, _)| key.clone())
-                .expect("a full denial aggregator contains an entry");
+                .map(|(key, _)| key.clone())?;
             self.entries.remove(&least_recent_key);
         }
 
@@ -518,21 +514,16 @@ impl DenialAggregator {
         // Compact stored sequence numbers in their existing recency order.  The
         // current observation then receives a number greater than every entry.
         if self.ingestion_sequence == u128::MAX {
-            let mut recency = self
-                .entries
-                .iter()
-                .map(|(key, entry)| (key.clone(), entry.last_observed_sequence))
-                .collect::<Vec<_>>();
-            recency.sort_unstable_by_key(|(_, sequence)| *sequence);
-            for (index, (key, _)) in recency.iter().enumerate() {
-                self.entries
-                    .get_mut(key)
-                    .expect("recency keys come from the aggregation map")
-                    .last_observed_sequence = index as u128 + 1;
+            let mut recency = self.entries.values_mut().collect::<Vec<_>>();
+            recency.sort_unstable_by_key(|entry| entry.last_observed_sequence);
+            let mut sequence = 0_u128;
+            for entry in recency {
+                sequence = sequence.saturating_add(1);
+                entry.last_observed_sequence = sequence;
             }
-            self.ingestion_sequence = recency.len() as u128;
+            self.ingestion_sequence = sequence;
         }
-        self.ingestion_sequence += 1;
+        self.ingestion_sequence = self.ingestion_sequence.saturating_add(1);
         self.ingestion_sequence
     }
 

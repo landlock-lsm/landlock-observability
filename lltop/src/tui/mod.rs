@@ -18,6 +18,7 @@ use landlock_observability::collector::{
     TryReceiveError,
 };
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use ratatui::Terminal;
 
 use model::{domain_ruleset, ObservationModel};
@@ -74,11 +75,7 @@ pub(crate) fn run(mut collector: Collector) -> Result<(), Box<dyn Error>> {
                         app.set_tab(tab);
                         continue;
                     }
-                    let scrollbar_column = app.hit.list.x + app.hit.list.width.saturating_sub(1);
-                    if mouse.column == scrollbar_column
-                        && mouse.row > app.hit.list.y
-                        && mouse.row < app.hit.list.y + app.hit.list.height.saturating_sub(1)
-                    {
+                    if scrollbar_hit(app.hit.list, mouse.column, mouse.row) {
                         app.dragging_scrollbar = true;
                         drag_scrollbar(&mut app, mouse.row);
                     } else {
@@ -110,7 +107,7 @@ where
         match receive() {
             Ok(event) => {
                 model.observe(&event);
-                count += 1;
+                count = count.saturating_add(1);
             }
             Err(TryReceiveError::Empty) => break,
             Err(error) => handle_collector_error(app, error)?,
@@ -157,16 +154,37 @@ fn follow_domain(app: &mut App, model: &ObservationModel) {
     app.detail = true;
 }
 
+fn scrollbar_hit(area: Rect, column: u16, row: u16) -> bool {
+    if area.width == 0 {
+        return false;
+    }
+    let Some(scrollbar_column) = area.x.checked_add(area.width.saturating_sub(1)) else {
+        return false;
+    };
+    let Some(scrollbar_bottom) = area.y.checked_add(area.height.saturating_sub(1)) else {
+        return false;
+    };
+    scrollbar_column == column && row > area.y && row < scrollbar_bottom
+}
+
 fn click_row(app: &mut App, column: u16, row: u16) {
     let area = app.hit.list;
-    if column < area.x
-        || column >= area.x + area.width
-        || row <= area.y
-        || row >= area.y + area.height.saturating_sub(1)
-    {
+    let Some(right) = area.x.checked_add(area.width) else {
+        return;
+    };
+    let Some(bottom) = area.y.checked_add(area.height.saturating_sub(1)) else {
+        return;
+    };
+    if column < area.x || column >= right || row <= area.y || row >= bottom {
         return;
     }
-    let visible = usize::from(row - area.y - app.hit.header_rows);
+    let Some(visible) = row
+        .checked_sub(area.y)
+        .and_then(|offset| offset.checked_sub(app.hit.header_rows))
+    else {
+        return;
+    };
+    let visible = usize::from(visible);
     let index = app.scroll.saturating_add(visible);
     if let Some(kind) = app
         .hit
@@ -181,10 +199,18 @@ fn click_row(app: &mut App, column: u16, row: u16) {
 
 fn drag_scrollbar(app: &mut App, row: u16) {
     let height = app.hit.list.height.saturating_sub(2).max(1);
-    let relative = row.saturating_sub(app.hit.list.y + 1).min(height - 1);
+    let Some(track_start) = app.hit.list.y.checked_add(1) else {
+        app.scroll_to(0);
+        return;
+    };
+    let relative = row
+        .saturating_sub(track_start)
+        .min(height.saturating_sub(1));
     let max_scroll = app.hit.rows.len().saturating_sub(usize::from(height));
-    let scroll = usize::from(relative).saturating_mul(max_scroll)
-        / usize::from(height.saturating_sub(1).max(1));
+    let scroll = usize::from(relative)
+        .saturating_mul(max_scroll)
+        .checked_div(usize::from(height.saturating_sub(1).max(1)))
+        .unwrap_or(0);
     app.scroll_to(scroll);
 }
 
@@ -192,7 +218,6 @@ fn drag_scrollbar(app: &mut App, row: u16) {
 mod tests {
     use super::*;
     use landlock_observability::event::{DomainId, MIN_LANDLOCK_ID};
-    use ratatui::layout::Rect;
 
     #[test]
     fn only_nonterminal_collector_errors_are_recoverable() {
@@ -264,5 +289,77 @@ mod tests {
         assert!(!app.detail);
         click_row(&mut app, 6, 14);
         assert_eq!(app.selected, None);
+
+        app.hit.list = Rect {
+            x: u16::MAX,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        click_row(&mut app, u16::MAX, 1);
+        assert_eq!(app.selected, None);
+        app.hit.list = Rect {
+            x: 0,
+            y: u16::MAX,
+            width: 2,
+            height: 2,
+        };
+        click_row(&mut app, 1, u16::MAX);
+        assert_eq!(app.selected, None);
+        app.hit.list = Rect::new(5, 5, 20, 10);
+        app.hit.header_rows = 2;
+        click_row(&mut app, 6, 6);
+        assert_eq!(app.selected, None);
+    }
+
+    #[test]
+    fn scrollbar_hit_testing_and_dragging_are_bounded() {
+        let area = Rect::new(5, 5, 20, 10);
+        assert!(scrollbar_hit(area, 24, 6));
+        assert!(!scrollbar_hit(area, 23, 6));
+        assert!(!scrollbar_hit(Rect::new(5, 5, 0, 10), 5, 6));
+        assert!(!scrollbar_hit(
+            Rect {
+                x: u16::MAX,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+            u16::MAX,
+            1
+        ));
+        assert!(!scrollbar_hit(
+            Rect {
+                x: 0,
+                y: u16::MAX,
+                width: 2,
+                height: 2,
+            },
+            1,
+            u16::MAX
+        ));
+
+        let mut app = App::new();
+        app.hit.list = Rect::new(0, 10, 10, 6);
+        app.hit.rows = vec![RowKind::Heading; 20];
+        drag_scrollbar(&mut app, 12);
+        assert_eq!(app.scroll, 5);
+
+        app.hit.list = Rect::new(0, u16::MAX, 10, 2);
+        app.scroll = 99;
+        drag_scrollbar(&mut app, u16::MAX);
+        assert_eq!(app.scroll, 0);
+    }
+
+    #[test]
+    fn following_requires_a_selected_observed_domain() {
+        let model = ObservationModel::new();
+        let mut app = App::new();
+        follow_domain(&mut app, &model);
+
+        app.selected = Some(RowKind::Domain(DomainId::new(MIN_LANDLOCK_ID + 1).unwrap()));
+        follow_domain(&mut app, &model);
+        assert_eq!(app.tab, Tab::Domains);
+        assert!(!app.detail);
     }
 }

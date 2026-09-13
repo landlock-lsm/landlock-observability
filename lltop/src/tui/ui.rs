@@ -45,7 +45,15 @@ pub(super) enum Tab {
 
 impl Tab {
     const ALL: [Self; 4] = [Self::Domains, Self::Denials, Self::Rulesets, Self::Stats];
-    const TITLES: [&'static str; 4] = ["Domains [1]", "Denials [2]", "Rulesets [3]", "Stats [4]"];
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Domains => "Domains [1]",
+            Self::Denials => "Denials [2]",
+            Self::Rulesets => "Rulesets [3]",
+            Self::Stats => "Stats [4]",
+        }
+    }
 
     fn index(self) -> usize {
         match self {
@@ -124,7 +132,12 @@ impl App {
     }
 
     pub(super) fn cycle_tab(&mut self) {
-        self.set_tab(Tab::ALL[(self.tab.index() + 1) % Tab::ALL.len()]);
+        self.set_tab(match self.tab {
+            Tab::Domains => Tab::Denials,
+            Tab::Denials => Tab::Rulesets,
+            Tab::Rulesets => Tab::Stats,
+            Tab::Stats => Tab::Domains,
+        });
     }
 
     pub(super) fn scroll_by(&mut self, delta: isize) {
@@ -160,15 +173,17 @@ impl App {
             .selected
             .as_ref()
             .and_then(|selected| selectable.iter().position(|(_, row)| *row == selected));
+        let last = selectable.len().saturating_sub(1);
         let next = match (current, delta.cmp(&0)) {
-            (None, Ordering::Less) => selectable.len() - 1,
+            (None, Ordering::Less) => last,
             (None, _) => 0,
             (Some(index), Ordering::Less) => index.saturating_sub(1),
-            (Some(index), _) => (index + 1).min(selectable.len() - 1),
+            (Some(index), _) => index.saturating_add(1).min(last),
         };
-        let (_, row) = selectable[next];
-        self.selected = Some(row.clone());
-        self.detail = true;
+        if let Some((_, row)) = selectable.get(next) {
+            self.selected = Some((*row).clone());
+            self.detail = true;
+        }
     }
 
     fn adjust_viewport(&mut self, row_count: usize, visible: usize, selected_index: Option<usize>) {
@@ -209,6 +224,21 @@ fn viewport_scroll(
     }
 }
 
+fn vertical_areas(areas: &[Rect]) -> Option<(Rect, Rect, Rect)> {
+    match areas {
+        [tabs, main, footer, ..] => Some((*tabs, *main, *footer)),
+        _ => None,
+    }
+}
+
+fn pane_areas(areas: &[Rect]) -> Option<(Rect, Option<Rect>)> {
+    match areas {
+        [list, detail, ..] => Some((*list, Some(*detail))),
+        [list] => Some((*list, None)),
+        [] => None,
+    }
+}
+
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, model: &ObservationModel) {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -218,8 +248,13 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, model: &ObservationMode
             Constraint::Length(1),
         ])
         .split(frame.area());
-    app.hit.tabs = vertical[0];
-    let titles = Tab::TITLES.into_iter().map(Line::from).collect::<Vec<_>>();
+    let (tabs_area, main_area, footer_area) =
+        vertical_areas(&vertical).unwrap_or((Rect::default(), Rect::default(), Rect::default()));
+    app.hit.tabs = tabs_area;
+    let titles = Tab::ALL
+        .into_iter()
+        .map(|tab| Line::from(tab.title()))
+        .collect::<Vec<_>>();
     let status = status_line(app, model);
     frame.render_widget(
         Tabs::new(titles)
@@ -231,18 +266,19 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, model: &ObservationMode
                     .title(" lltop ")
                     .title_bottom(Line::from(status).right_aligned()),
             ),
-        vertical[0],
+        tabs_area,
     );
 
     let panes = if app.detail && app.tab != Tab::Stats {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(vertical[1])
+            .split(main_area)
             .to_vec()
     } else {
-        vec![vertical[1]]
+        vec![main_area]
     };
+    let (list_area, detail_area) = pane_areas(&panes).unwrap_or((Rect::default(), None));
     let rows = match app.tab {
         Tab::Domains => domain_rows(model, app.selected.as_ref()),
         Tab::Denials => denial_rows(model, app.selected.as_ref()),
@@ -250,15 +286,15 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, model: &ObservationMode
         Tab::Stats => Vec::new(),
     };
     if app.tab == Tab::Stats {
-        draw_stats(frame, panes[0], model);
+        draw_stats(frame, list_area, model);
         app.hit = HitMap {
-            tabs: vertical[0],
+            tabs: tabs_area,
             ..HitMap::default()
         };
     } else {
-        draw_list(frame, panes[0], app, rows);
-        if panes.len() == 2 {
-            draw_detail(frame, panes[1], app, model);
+        draw_list(frame, list_area, app, rows);
+        if let Some(detail_area) = detail_area {
+            draw_detail(frame, detail_area, app, model);
         }
     }
     frame.render_widget(
@@ -274,7 +310,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App, model: &ObservationMode
             Span::styled("Enter", theme::heading()),
             Span::raw(" follow"),
         ])),
-        vertical[2],
+        footer_area,
     );
 }
 
@@ -353,7 +389,7 @@ fn draw_list(frame: &mut Frame<'_>, area: Rect, app: &mut App, rows: Vec<Display
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {} ", Tab::TITLES[app.tab.index()])),
+                .title(format!(" {} ", app.tab.title())),
         ),
         area,
     );
@@ -382,8 +418,9 @@ fn tree_prefix(last: &[bool]) -> String {
         return String::new();
     }
     let mut prefix = String::new();
+    let final_index = last.len().saturating_sub(1);
     for (index, is_last) in last.iter().enumerate().skip(1) {
-        if index + 1 == last.len() {
+        if index == final_index {
             prefix.push_str(if *is_last { "└─ " } else { "├─ " });
         } else {
             prefix.push_str(if *is_last { "   " } else { "│  " });
@@ -551,8 +588,10 @@ fn ruleset_rows(model: &ObservationModel, selected: Option<&RowKind>) -> Vec<Dis
                 kind,
                 text: format!(
                     "{}  rules={}  {}",
-                    RulesetVersion::new(ruleset.ruleset_id(), ruleset.max_observed_version(),),
-                    ruleset.filesystem_rule_count() + ruleset.network_rule_count(),
+                    RulesetVersion::new(ruleset.ruleset_id(), ruleset.max_observed_version()),
+                    ruleset
+                        .filesystem_rule_count()
+                        .saturating_add(ruleset.network_rule_count()),
                     lifecycle(ruleset.lifecycle())
                 ),
                 continuation_indent: None,
@@ -586,19 +625,24 @@ fn lifecycle_style(value: LifecycleState) -> Style {
     }
 }
 
-fn blockers(entry: &AggregatedDenial) -> String {
-    match entry.latest_event() {
+fn blockers_event(event: &Event) -> String {
+    match event {
         Event::DenyAccessFs(event) => format::filesystem(event.blockers()),
         Event::DenyAccessNet(event) => format::network(event.blockers()),
         Event::DenyPtrace(_) => "ptrace".to_owned(),
         Event::DenyScopeSignal(_) => format::scope(ScopeAccess::from_bits(1 << 1)),
         Event::DenyScopeAbstractUnixSocket(_) => format::scope(ScopeAccess::from_bits(1 << 0)),
-        _ => unreachable!("aggregated entries contain denials"),
+        // Keep rendering total if the private aggregation invariant regresses.
+        _ => "unknown".to_owned(),
     }
 }
 
-fn target(entry: &AggregatedDenial) -> String {
-    match entry.latest_event() {
+fn blockers(entry: &AggregatedDenial) -> String {
+    blockers_event(entry.latest_event())
+}
+
+fn target_event(event: &Event) -> String {
+    match event {
         Event::DenyAccessFs(event) => format::escape(event.pathname()),
         Event::DenyAccessNet(event) => {
             let (mut bind, mut connect) = (false, false);
@@ -627,8 +671,13 @@ fn target(entry: &AggregatedDenial) -> String {
             format::escape(event.target_comm())
         ),
         Event::DenyScopeAbstractUnixSocket(event) => event.abstract_name().to_string(),
-        _ => unreachable!("aggregated entries contain denials"),
+        // Keep rendering total if the private aggregation invariant regresses.
+        _ => "unknown".to_owned(),
     }
+}
+
+fn target(entry: &AggregatedDenial) -> String {
+    target_event(entry.latest_event())
 }
 
 fn detail_lines(app: &App, model: &ObservationModel, width: usize) -> Vec<Line<'static>> {
@@ -825,7 +874,11 @@ fn detail_lines(app: &App, model: &ObservationModel, width: usize) -> Vec<Line<'
     }
     let mut lines = Vec::new();
     for (label, value, style) in fields {
-        let indent = (label.chars().count() + 4).min(width.saturating_sub(1));
+        let indent = label
+            .chars()
+            .count()
+            .saturating_add(4)
+            .min(width.saturating_sub(1));
         for (index, part) in format::wrap(
             &value,
             width.saturating_sub(label.chars().count()),
@@ -889,17 +942,17 @@ fn draw_stats(frame: &mut Frame<'_>, area: Rect, model: &ObservationModel) {
 }
 
 pub(super) fn clicked_tab(area: Rect, column: u16, row: u16) -> Option<Tab> {
-    if row != area.y + 1 || column <= area.x {
+    if row != area.y.checked_add(1)? || column <= area.x {
         return None;
     }
-    let relative = usize::from(column - area.x - 1);
-    let mut start = 0;
-    for (index, title) in Tab::TITLES.iter().enumerate() {
-        let end = start + title.len() + 2;
+    let relative = usize::from(column.checked_sub(area.x)?.checked_sub(1)?);
+    let mut start = 0_usize;
+    for tab in Tab::ALL {
+        let end = start.checked_add(tab.title().len())?.checked_add(2)?;
         if (start..end).contains(&relative) {
-            return Some(Tab::ALL[index]);
+            return Some(tab);
         }
-        start = end + 1;
+        start = end.checked_add(1)?;
     }
     None
 }
@@ -915,6 +968,7 @@ mod tests {
         FreeDomainEvent, HierarchySnapshot, KernelTimestamp, NetworkAccess, ProcessId, ScopeAccess,
         ThreadId, MIN_LANDLOCK_ID,
     };
+    use ratatui::{backend::TestBackend, Terminal};
 
     fn pid(value: u32) -> ProcessId {
         ProcessId::new(value).unwrap()
@@ -985,6 +1039,60 @@ mod tests {
     fn lifecycle_labels_cover_the_closed_statuses() {
         assert_eq!(lifecycle(LifecycleState::Allocated), "allocated");
         assert_eq!(lifecycle(LifecycleState::Deallocated), "deallocated");
+    }
+
+    #[test]
+    fn layout_helpers_and_tab_cycle_cover_every_total_case() {
+        let first = Rect::new(0, 0, 1, 1);
+        let second = Rect::new(1, 1, 2, 2);
+        let third = Rect::new(3, 3, 3, 3);
+        assert_eq!(
+            vertical_areas(&[first, second, third]),
+            Some((first, second, third))
+        );
+        assert_eq!(vertical_areas(&[first, second]), None);
+        assert_eq!(pane_areas(&[]), None);
+        assert_eq!(pane_areas(&[first]), Some((first, None)));
+        assert_eq!(pane_areas(&[first, second]), Some((first, Some(second))));
+        assert_eq!(tree_prefix(&[false, false, true]), "│  └─ ");
+        assert_eq!(tree_prefix(&[false, true, false]), "   ├─ ");
+
+        let mut app = App::new();
+        for expected in [Tab::Denials, Tab::Rulesets, Tab::Stats, Tab::Domains] {
+            app.cycle_tab();
+            assert_eq!(app.tab, expected);
+        }
+    }
+
+    #[test]
+    fn complete_draw_path_handles_every_tab_and_detail_layout() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let model = ObservationModel::new();
+        let mut app = App::new();
+
+        for tab in Tab::ALL {
+            app.set_tab(tab);
+            app.detail = tab != Tab::Stats;
+            terminal
+                .draw(|frame| draw(frame, &mut app, &model))
+                .unwrap();
+            assert_eq!(app.hit.tabs.height, 3);
+        }
+    }
+
+    #[test]
+    fn non_denial_rendering_fallback_is_total() {
+        let event = Event::FreeDomain(
+            FreeDomainEvent::builder()
+                .timestamp(KernelTimestamp::from_nanoseconds(1))
+                .domain_id(DomainId::new(MIN_LANDLOCK_ID + 1).unwrap())
+                .denial_count(0)
+                .build(),
+        );
+
+        assert_eq!(blockers_event(&event), "unknown");
+        assert_eq!(target_event(&event), "unknown");
     }
 
     #[test]
@@ -1256,6 +1364,8 @@ mod tests {
         ] {
             model.observe(&event);
         }
+        assert_eq!(ruleset_rows(&model, None).len(), 1);
+
         let mut app = App::new();
         app.selected = Some(RowKind::Ruleset(id));
 
@@ -1419,6 +1529,15 @@ mod tests {
         assert_eq!(app.selected, Some(domains[3].clone()));
         app.adjust_viewport(app.hit.rows.len(), 3, Some(5));
         assert_eq!(app.scroll, 3);
+
+        app.selected = None;
+        app.move_selection(-1);
+        assert_eq!(app.selected, Some(domains[4].clone()));
+        app.selected = None;
+        app.move_selection(1);
+        assert_eq!(app.selected, Some(domains[0].clone()));
+        app.move_selection(1);
+        assert_eq!(app.selected, Some(domains[1].clone()));
     }
 
     #[test]

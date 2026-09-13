@@ -71,30 +71,36 @@ pub(super) fn wrap(text: &str, first_width: usize, continuation_width: usize) ->
     let mut width = first_width.max(1);
     let mut output = Vec::new();
     while display_width(remaining) > width {
-        let mut used_width = 0;
-        let mut byte_limit = 0;
+        let mut used_width = 0_usize;
+        let mut byte_limit = 0_usize;
         for (index, character) in remaining.char_indices() {
             let mut encoded = [0; 4];
             let character_width = display_width(character.encode_utf8(&mut encoded));
-            if used_width + character_width > width {
+            let character_end = index
+                .saturating_add(character.len_utf8())
+                .min(remaining.len());
+            if used_width.saturating_add(character_width) > width {
                 if byte_limit == 0 {
-                    byte_limit = index + character.len_utf8();
+                    byte_limit = character_end;
                 }
                 break;
             }
-            used_width += character_width;
-            byte_limit = index + character.len_utf8();
+            used_width = used_width.saturating_add(character_width);
+            byte_limit = character_end;
         }
-        let candidate = &remaining[..byte_limit];
+        let candidate = remaining.get(..byte_limit).unwrap_or(remaining);
+        // These ASCII separators and their ASCII suffixes preserve UTF-8
+        // boundaries; checked slicing keeps future separator changes total.
         let split = candidate
             .rfind(", ")
-            .map(|index| index + 2)
-            .or_else(|| candidate.rfind('/').map(|index| index + 1))
-            .or_else(|| candidate.rfind(' ').map(|index| index + 1))
+            .and_then(|index| index.checked_add(2))
+            .or_else(|| candidate.rfind('/').and_then(|index| index.checked_add(1)))
+            .or_else(|| candidate.rfind(' ').and_then(|index| index.checked_add(1)))
             .filter(|index| *index != 0)
             .unwrap_or(byte_limit);
-        output.push(remaining[..split].to_owned());
-        remaining = &remaining[split..];
+        let (current, rest) = remaining.split_at_checked(split).unwrap_or((remaining, ""));
+        output.push(current.to_owned());
+        remaining = rest;
         width = continuation_width.max(1);
     }
     output.push(remaining.to_owned());
@@ -142,6 +148,7 @@ mod tests {
         assert_eq!(wrap("/long/path/name", 10, 8), ["/long/", "path/", "name"]);
         assert_eq!(wrap("éééé", 2, 2), ["éé", "éé"]);
         assert_eq!(wrap("界界", 2, 2), ["界", "界"]);
+        assert_eq!(wrap("界x", 1, 1), ["界", "x"]);
         assert_eq!(wrap("🔕x", 2, 2), ["🔕", "x"]);
         assert_eq!(wrap("🔔x", 2, 2), ["🔔", "x"]);
         assert_eq!(wrap("abcdef", 3, 2), ["abc", "de", "f"]);

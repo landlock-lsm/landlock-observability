@@ -102,14 +102,13 @@ pub struct LandlockId<K: LandlockIdKind> {
 impl<K: LandlockIdKind> LandlockId<K> {
     /// Creates an ID from a kernel-assigned value.
     pub const fn new(value: u64) -> Result<Self, InvalidLandlockIdError> {
-        if value < MIN_LANDLOCK_ID {
-            return Err(InvalidLandlockIdError { value });
+        match NonZeroU64::new(value) {
+            Some(value) if value.get() >= MIN_LANDLOCK_ID => Ok(Self {
+                value,
+                kind: PhantomData,
+            }),
+            _ => Err(InvalidLandlockIdError { value }),
         }
-        let value = NonZeroU64::new(value).expect("a valid Landlock ID must be nonzero");
-        Ok(Self {
-            value,
-            kind: PhantomData,
-        })
     }
 
     /// Returns the kernel-assigned ID.

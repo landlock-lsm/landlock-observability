@@ -203,26 +203,10 @@ impl<K: CapturedBytesOrigin> CapturedBytes<K> {
     }
 
     fn write_escaped(&self, formatter: &mut fmt::Formatter<'_>, omission: bool) -> fmt::Result {
-        let mut remaining = self.bytes.as_slice();
-        while !remaining.is_empty() {
-            match std::str::from_utf8(remaining) {
-                Ok(valid) => {
-                    write_valid(formatter, valid)?;
-                    remaining = &[];
-                }
-                Err(error) => {
-                    let valid_end = error.valid_up_to();
-                    write_valid(
-                        formatter,
-                        std::str::from_utf8(&remaining[..valid_end])
-                            .expect("valid_up_to identifies valid UTF-8"),
-                    )?;
-                    let invalid_len = error.error_len().unwrap_or(remaining.len() - valid_end);
-                    for byte in &remaining[valid_end..valid_end + invalid_len] {
-                        write!(formatter, "\\x{byte:02x}")?;
-                    }
-                    remaining = &remaining[valid_end + invalid_len..];
-                }
+        for chunk in self.bytes.utf8_chunks() {
+            write_valid(formatter, chunk.valid())?;
+            for byte in chunk.invalid() {
+                write!(formatter, "\\x{byte:02x}")?;
             }
         }
         if omission && self.bytes_omitted {

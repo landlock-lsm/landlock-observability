@@ -31,13 +31,14 @@ impl DenialKind {
         Self::AbstractUnix,
     ];
 
-    const fn index(self) -> usize {
+    fn counter(self, counters: &mut [u64; DENIAL_KIND_COUNT]) -> &mut u64 {
+        let [fs, net, ptrace, signal, abstract_unix] = counters;
         match self {
-            Self::Fs => 0,
-            Self::Net => 1,
-            Self::Ptrace => 2,
-            Self::Signal => 3,
-            Self::AbstractUnix => 4,
+            Self::Fs => fs,
+            Self::Net => net,
+            Self::Ptrace => ptrace,
+            Self::Signal => signal,
+            Self::AbstractUnix => abstract_unix,
         }
     }
 
@@ -82,7 +83,7 @@ struct Stats {
 impl Stats {
     fn observe(&mut self, kind: DenialKind) {
         self.total_denials = self.total_denials.saturating_add(1);
-        let counter = &mut self.denials[kind.index()];
+        let counter = kind.counter(&mut self.denials);
         *counter = counter.saturating_add(1);
     }
 }
@@ -130,7 +131,7 @@ impl Batch {
         let denial_record = DenialKind::from_event(event).and_then(|kind| {
             self.denials
                 .observe_entry(event)
-                .map(|denial| format_denial(kind, denial))
+                .and_then(|denial| format_denial(kind, denial))
         });
         if let Some(kind) = DenialKind::from_event(event) {
             self.stats.observe(kind);
@@ -148,8 +149,12 @@ impl Batch {
                 previous.as_ref().map(|(_, allocated)| *allocated),
                 current.as_ref(),
             ) {
-                (Some(true), Some((_, false))) => self.allocated_domains -= 1,
-                (Some(false) | None, Some((_, true))) => self.allocated_domains += 1,
+                (Some(true), Some((_, false))) => {
+                    self.allocated_domains = self.allocated_domains.saturating_sub(1);
+                }
+                (Some(false) | None, Some((_, true))) => {
+                    self.allocated_domains = self.allocated_domains.saturating_add(1);
+                }
                 _ => {}
             }
             if current.as_ref().map(|(record, _)| record)
@@ -299,7 +304,7 @@ fn escape<K: CapturedBytesOrigin>(value: &CapturedBytes<K>) -> String {
             escaped.push(char::from(*byte));
         } else {
             use std::fmt::Write as _;
-            write!(escaped, "\\x{byte:02x}").expect("writing to a String cannot fail");
+            let _ = write!(escaped, "\\x{byte:02x}");
         }
     }
     if value.bytes_omitted() {
@@ -358,15 +363,21 @@ fn elapsed(first_ns: u64, latest_ns: u64) -> String {
     }
 }
 
-fn format_denial(kind: DenialKind, denial: &AggregatedDenial) -> String {
-    let event = denial.latest_event();
-    let (domain, blockers, target, relation) = match event {
-        Event::DenyAccessFs(event) => (
+type DenialFields = (
+    DomainId,
+    String,
+    String,
+    Option<(&'static str, DomainMembership)>,
+);
+
+fn denial_fields(event: &Event) -> Option<DenialFields> {
+    match event {
+        Event::DenyAccessFs(event) => Some((
             event.context().hierarchy().domain_id(),
             filesystem_blockers(event.blockers()),
             escape(event.pathname()),
             None,
-        ),
+        )),
         Event::DenyAccessNet(event) => {
             let (mut has_bind, mut has_connect) = (false, false);
             for name in event.blockers().known_names() {
@@ -382,14 +393,14 @@ fn format_denial(kind: DenialKind, denial: &AggregatedDenial) -> String {
                     event.destination_port()
                 ),
             };
-            (
+            Some((
                 event.context().hierarchy().domain_id(),
                 network_blockers(event.blockers()),
                 target,
                 None,
-            )
+            ))
         }
-        Event::DenyPtrace(event) => (
+        Event::DenyPtrace(event) => Some((
             event.context().hierarchy().domain_id(),
             "ptrace".to_owned(),
             format!(
@@ -398,8 +409,8 @@ fn format_denial(kind: DenialKind, denial: &AggregatedDenial) -> String {
                 escape(event.tracee_comm())
             ),
             Some(("tracee_domain", event.tracee_domain())),
-        ),
-        Event::DenyScopeSignal(event) => (
+        )),
+        Event::DenyScopeSignal(event) => Some((
             event.context().hierarchy().domain_id(),
             "Scope:signal".to_owned(),
             format!(
@@ -408,19 +419,24 @@ fn format_denial(kind: DenialKind, denial: &AggregatedDenial) -> String {
                 escape(event.target_comm())
             ),
             Some(("target_domain", event.target_domain())),
-        ),
-        Event::DenyScopeAbstractUnixSocket(event) => (
+        )),
+        Event::DenyScopeAbstractUnixSocket(event) => Some((
             event.context().hierarchy().domain_id(),
             "Scope:abstract_unix_socket".to_owned(),
             format!("@{}", escape(event.abstract_name())),
             Some(("peer_domain", event.peer_domain())),
-        ),
-        _ => unreachable!("an aggregated denial contains a denial event"),
-    };
+        )),
+        // Keep output total if the private aggregation invariant regresses.
+        _ => None,
+    }
+}
+
+fn format_denial(kind: DenialKind, denial: &AggregatedDenial) -> Option<String> {
+    let (domain, blockers, target, relation) = denial_fields(denial.latest_event())?;
     let relation = relation.map_or_else(String::new, |(label, membership)| {
         format!(" {label}={}", domain_membership(membership))
     });
-    format!(
+    Some(format!(
         "DENIAL type={} domain={} blockers={blockers} target={target} count={} age={} same_exec={} logged={}{}",
         kind.label(),
         domain,
@@ -432,23 +448,17 @@ fn format_denial(kind: DenialKind, denial: &AggregatedDenial) -> String {
         u8::from(denial.same_exec()),
         u8::from(denial.logged()),
         relation,
-    )
+    ))
 }
 
 fn format_stats(allocated: usize, total: usize, stats: &Stats) -> String {
     let mut kinds = String::new();
-    for (index, kind) in DenialKind::ALL.into_iter().enumerate() {
+    for (index, (kind, count)) in DenialKind::ALL.into_iter().zip(stats.denials).enumerate() {
         if index != 0 {
             kinds.push(' ');
         }
         use std::fmt::Write as _;
-        write!(
-            kinds,
-            "{}={}",
-            kind.stats_label(),
-            stats.denials[kind.index()]
-        )
-        .expect("writing to a String cannot fail");
+        let _ = write!(kinds, "{}={count}", kind.stats_label());
     }
     format!(
         "STATS domains={allocated}/{} denials={} ({kinds})",
@@ -512,6 +522,19 @@ mod tests {
                 .pathname(captured(path))
                 .build(),
         )
+    }
+
+    #[test]
+    fn non_denial_field_fallback_is_total() {
+        let event = Event::FreeDomain(
+            FreeDomainEvent::builder()
+                .timestamp(timestamp(1))
+                .domain_id(DomainId::new(MIN_LANDLOCK_ID + 1).unwrap())
+                .denial_count(0)
+                .build(),
+        );
+
+        assert!(denial_fields(&event).is_none());
     }
 
     #[test]
