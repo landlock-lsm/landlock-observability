@@ -17,6 +17,8 @@ env:
   # Linux v7.3-rc1, the first upstream release containing the Landlock
   # tracing interface used by this crate (Landlock ABI 11).
   LINUX_COMMIT: cee9395acd8043be0644b25c34bfa86623f2b935
+  LANDLOCK_TEST_TOOLS_COMMIT: 1dd31a0f7961cd7107b78497859d593849f30008
+  KERNEL_OUTPUT: linux/.out-landlock-x86_64-clang-light
 
 jobs:
   commit_list:
@@ -50,6 +52,78 @@ jobs:
 
     outputs:
       commits: ${{ toJSON(steps.*.outputs.*) }}
+
+  kernel_x86_64:
+    name: Integration x86_64 kernel
+    runs-on: ubuntu-24.04
+    steps:
+
+    - name: Restore integration kernel cache
+      id: kernel_cache
+      uses: actions/cache@v5
+      with:
+        path: |
+          linux/.out-landlock-x86_64-clang-light/.config
+          linux/.out-landlock-x86_64-clang-light/vmlinux
+          linux/.out-landlock-x86_64-clang-light/arch/x86/boot/bzImage
+        key: integration-x86-64-${{ env.LINUX_COMMIT }}-${{ env.LANDLOCK_TEST_TOOLS_COMMIT }}
+
+    - name: Install kernel build prerequisites
+      if: steps.kernel_cache.outputs.cache-hit != 'true'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          bc \
+          bison \
+          build-essential \
+          clang \
+          flex \
+          gcc \
+          libelf-dev \
+          libssl-dev \
+          llvm \
+          make \
+          pahole \
+          pkg-config \
+          zlib1g-dev
+
+    - name: Check out Landlock test tools
+      if: steps.kernel_cache.outputs.cache-hit != 'true'
+      uses: actions/checkout@v5
+      with:
+        repository: landlock-lsm/landlock-test-tools
+        ref: ${{ env.LANDLOCK_TEST_TOOLS_COMMIT }}
+        path: landlock-test-tools
+        fetch-depth: 1
+
+    - name: Check out Linux
+      if: steps.kernel_cache.outputs.cache-hit != 'true'
+      uses: actions/checkout@v5
+      with:
+        repository: landlock-lsm/linux
+        ref: ${{ env.LINUX_COMMIT }}
+        path: linux
+        fetch-depth: 1
+
+    - name: Build x86_64 integration kernel
+      if: steps.kernel_cache.outputs.cache-hit != 'true'
+      working-directory: linux
+      run: |
+        ARCH=x86_64 CC=clang BUILD_FLAVOR=light \
+          ../landlock-test-tools/check-linux.sh build
+
+    - name: Check integration kernel artifacts
+      run: |
+        for artifact in \
+          "$KERNEL_OUTPUT/.config" \
+          "$KERNEL_OUTPUT/vmlinux" \
+          "$KERNEL_OUTPUT/arch/x86/boot/bzImage"; do
+          if [[ ! -s "$artifact" ]]; then
+            printf 'Missing or empty integration kernel artifact: %s\n' \
+              "$artifact" >&2
+            exit 1
+          fi
+        done
 
   ubuntu_24_rust_msrv:
     runs-on: ubuntu-24.04
@@ -186,3 +260,91 @@ jobs:
         ./scripts/generate-access-names.py \
           --kernel-tree linux-landlock-headers \
           --check
+
+  kernel_integration:
+    name: Privileged kernel integration test
+    runs-on: ubuntu-24.04
+    needs: kernel_x86_64
+    steps:
+
+    - name: Install integration prerequisites
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          clang \
+          gcc \
+          libelf-dev \
+          linux-tools-generic \
+          llvm \
+          make \
+          pkg-config \
+          qemu-system-x86 \
+          virtme-ng \
+          zlib1g-dev
+        rustup toolchain install stable --profile minimal
+
+    - uses: actions/checkout@v5
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    - name: Check out Landlock test tools
+      uses: actions/checkout@v5
+      with:
+        repository: landlock-lsm/landlock-test-tools
+        ref: ${{ env.LANDLOCK_TEST_TOOLS_COMMIT }}
+        path: landlock-test-tools
+        fetch-depth: 1
+
+    - name: Restore integration kernel
+      uses: actions/cache/restore@v5
+      with:
+        path: |
+          linux/.out-landlock-x86_64-clang-light/.config
+          linux/.out-landlock-x86_64-clang-light/vmlinux
+          linux/.out-landlock-x86_64-clang-light/arch/x86/boot/bzImage
+        key: integration-x86-64-${{ env.LINUX_COMMIT }}-${{ env.LANDLOCK_TEST_TOOLS_COMMIT }}
+        fail-on-cache-miss: true
+
+    - name: Check integration kernel artifacts
+      run: |
+        for artifact in \
+          "$KERNEL_OUTPUT/.config" \
+          "$KERNEL_OUTPUT/vmlinux" \
+          "$KERNEL_OUTPUT/arch/x86/boot/bzImage"; do
+          if [[ ! -s "$artifact" ]]; then
+            printf 'Missing or empty integration kernel artifact: %s\n' \
+              "$artifact" >&2
+            exit 1
+          fi
+        done
+
+    - name: Build integration artifacts
+      run: |
+        rustup run stable cargo test --locked --workspace \
+          --test kernel_events \
+          --no-run --message-format=json-render-diagnostics \
+          > "$RUNNER_TEMP/integration-artifacts.json"
+
+    - name: Select integration artifacts
+      run: |
+        ./scripts/ci/select-cargo-test-executables.sh \
+          "$RUNNER_TEMP/integration-artifacts.json" \
+          kernel_events=KERNEL_EVENTS_EXECUTABLE >> "$GITHUB_ENV"
+
+    - name: Check CO-RE declarations
+      run: |
+        linux_tools_package=$(
+          dpkg-query --showformat='${Depends}' --show linux-tools-generic
+        )
+        PATH="/usr/lib/linux-tools/${linux_tools_package#linux-tools-}:$PATH" \
+          ./scripts/ci/check-core-declarations.sh \
+          --vmlinux "$KERNEL_OUTPUT/vmlinux" \
+          --build-dir target/debug/build
+
+    - name: Run privileged integration test in the integration guest
+      run: |
+        ./landlock-test-tools/x86-run.sh \
+          "$KERNEL_OUTPUT/arch/x86/boot/bzImage" -- \
+          env LANDLOCK_CRATE_TEST_ABI=11 \
+          "$KERNEL_EVENTS_EXECUTABLE" \
+          --ignored --exact kernel_events --test-threads 1
