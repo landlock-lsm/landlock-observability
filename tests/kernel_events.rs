@@ -21,12 +21,13 @@ use landlock::{
 };
 use landlock_observability::collector::{Collector, CollectorConfig};
 use landlock_observability::event::{
-    Denial, DenialContext, DomainId, DomainMembership, EnforceDomainEvent, Event, FilesystemAccess,
-    NetworkAccess, RulesetId, ScopeAccess, ThreadId,
+    BlockerType, Denial, DenialContext, DomainId, DomainMembership, EnforceDomainEvent, Event,
+    FilesystemAccess, NetworkAccess, RulesetId, ScopeAccess, ThreadId,
 };
 use landlock_observability::privilege::Privileges;
 use landlock_observability::state::{DomainParent, LifecycleState, RulesetVersion, State};
 use nix::errno::Errno;
+use nix::mount::{mount, MsFlags};
 use nix::sys::{ptrace, signal};
 use nix::unistd::Pid;
 use wait_timeout::ChildExt;
@@ -119,6 +120,7 @@ enum ExpectedEventKind {
     DenyAccessFs,
     DenyAccessFsDifferentExec,
     DenyAccessFsMakeReg,
+    DenyAccessFsTopology,
     DenyAccessNetBind,
     DenyAccessNetConnect,
     DenyAccessNetConnectZero,
@@ -138,6 +140,7 @@ const EXPECTED_EVENT_KINDS: &[ExpectedEventKind] = &[
     ExpectedEventKind::DenyAccessFs,
     ExpectedEventKind::DenyAccessFsDifferentExec,
     ExpectedEventKind::DenyAccessFsMakeReg,
+    ExpectedEventKind::DenyAccessFsTopology,
     ExpectedEventKind::DenyAccessNetBind,
     ExpectedEventKind::DenyAccessNetConnect,
     ExpectedEventKind::DenyAccessNetConnectZero,
@@ -351,7 +354,10 @@ fn scenario_helper() -> Result<(), Box<dyn Error>> {
     let allowed_path = env::current_dir()?.canonicalize()?;
     let allowed_metadata = fs::metadata(&allowed_path)?;
     let denied_path = allowed_path.join(format!(".llobs-denied-{unique}"));
-    let handled_filesystem = AccessFs::ReadDir | AccessFs::MakeReg;
+    if !has_cap_sys_admin()? {
+        return Err("topology scenario requires CAP_SYS_ADMIN".into());
+    }
+    let handled_filesystem = AccessFs::ReadDir | AccessFs::MakeReg | AccessFs::Refer;
     let handled_network = AccessNet::BindTcp | AccessNet::ConnectTcp;
     let ruleset = Ruleset::default()
         .handle_access(handled_filesystem)?
@@ -368,6 +374,10 @@ fn scenario_helper() -> Result<(), Box<dyn Error>> {
         return Err(format!("ruleset was not fully enforced: {status:?}").into());
     }
 
+    let topology_error =
+        mount::<str, str, str, str>(None, "/", None, MsFlags::MS_PRIVATE | MsFlags::MS_REC, None)
+            .unwrap_err();
+    assert_eq!(topology_error, Errno::EPERM);
     let fs_error = fs::read_dir("/proc").unwrap_err();
     assert_errno(&fs_error, Errno::EACCES);
     let create_error = fs::File::create(&denied_path).unwrap_err();
@@ -613,17 +623,23 @@ fn correlated_event_kind(
         Event::EnforceDomain(value) => {
             (value.domain_id() == domain_id).then_some(ExpectedEventKind::EnforceDomain)
         }
-        Event::DenyAccessFs(value) => (value.context().hierarchy().domain_id() == domain_id)
-            .then_some(
-                if value.blockers_access() == filesystem_access(AccessFs::MakeReg) {
-                    ExpectedEventKind::DenyAccessFsMakeReg
-                } else if value.context().same_exec() {
-                    ExpectedEventKind::DenyAccessFs
-                } else {
-                    ExpectedEventKind::DenyAccessFsDifferentExec
-                },
-            ),
+        Event::DenyAccessFs(value) if value.context().hierarchy().domain_id() == domain_id => Some(
+            if value.blockers_type() == BlockerType::FS_CHANGE_TOPOLOGY {
+                ExpectedEventKind::DenyAccessFsTopology
+            } else if value.blockers_type() != BlockerType::FS_ACCESS {
+                return Err(format!("unexpected filesystem blocker type: {value:?}").into());
+            } else if value.blockers_access() == filesystem_access(AccessFs::MakeReg) {
+                ExpectedEventKind::DenyAccessFsMakeReg
+            } else if value.context().same_exec() {
+                ExpectedEventKind::DenyAccessFs
+            } else {
+                ExpectedEventKind::DenyAccessFsDifferentExec
+            },
+        ),
         Event::DenyAccessNet(value) if value.context().hierarchy().domain_id() == domain_id => {
+            if value.blockers_type() != BlockerType::NET_ACCESS {
+                return Err(format!("unexpected network blocker type: {value:?}").into());
+            }
             if value.blockers_access() == network_access(AccessNet::BindTcp) {
                 Some(ExpectedEventKind::DenyAccessNetBind)
             } else if value.blockers_access() == network_access(AccessNet::ConnectTcp) {
@@ -815,6 +831,7 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
                     FilesystemAccess::from_bits(
                         filesystem_access(AccessFs::ReadDir).bits()
                             | filesystem_access(AccessFs::MakeReg).bits()
+                            | filesystem_access(AccessFs::Refer).bits()
                     )
                 );
                 assert_eq!(
@@ -863,7 +880,8 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
             }
             ExpectedEventKind::DenyAccessFs
             | ExpectedEventKind::DenyAccessFsDifferentExec
-            | ExpectedEventKind::DenyAccessFsMakeReg => {
+            | ExpectedEventKind::DenyAccessFsMakeReg
+            | ExpectedEventKind::DenyAccessFsTopology => {
                 let value = expect_event!(event, kind, DenyAccessFs);
                 let after_exec = kind == ExpectedEventKind::DenyAccessFsDifferentExec;
                 assert_context(
@@ -878,20 +896,28 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
                 }
                 denial_counts.push(value.context().cumulative_denial_count());
                 assert_ne!(value.device(), 0);
-                if kind == ExpectedEventKind::DenyAccessFsMakeReg {
-                    assert_eq!(
-                        value.blockers_access(),
-                        filesystem_access(AccessFs::MakeReg)
-                    );
+                if kind == ExpectedEventKind::DenyAccessFsTopology {
+                    assert_eq!(value.blockers_type(), BlockerType::FS_CHANGE_TOPOLOGY);
+                    assert_eq!(value.blockers_access().bits(), 0);
                     assert_ne!(value.inode(), 0);
-                    assert_eq!(value.pathname().as_bytes(), allowed_path);
+                    assert_eq!(value.pathname().as_bytes(), b"/");
                 } else {
-                    assert_eq!(
-                        value.blockers_access(),
-                        filesystem_access(AccessFs::ReadDir)
-                    );
-                    assert_ne!(value.inode(), 0);
-                    assert_eq!(value.pathname().as_bytes(), b"/proc");
+                    assert_eq!(value.blockers_type(), BlockerType::FS_ACCESS);
+                    if kind == ExpectedEventKind::DenyAccessFsMakeReg {
+                        assert_eq!(
+                            value.blockers_access(),
+                            filesystem_access(AccessFs::MakeReg)
+                        );
+                        assert_ne!(value.inode(), 0);
+                        assert_eq!(value.pathname().as_bytes(), allowed_path);
+                    } else {
+                        assert_eq!(
+                            value.blockers_access(),
+                            filesystem_access(AccessFs::ReadDir)
+                        );
+                        assert_ne!(value.inode(), 0);
+                        assert_eq!(value.pathname().as_bytes(), b"/proc");
+                    }
                 }
             }
             ExpectedEventKind::DenyAccessNetBind
@@ -906,6 +932,7 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
                     true,
                 );
                 denial_counts.push(value.context().cumulative_denial_count());
+                assert_eq!(value.blockers_type(), BlockerType::NET_ACCESS);
                 if kind == ExpectedEventKind::DenyAccessNetBind {
                     assert_eq!(value.blockers_access(), network_access(AccessNet::BindTcp));
                     assert_eq!(value.source_port(), u64::from(DENIED_BIND_PORT));
@@ -971,7 +998,7 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
             ExpectedEventKind::FreeDomain => {
                 let value = expect_event!(event, kind, FreeDomain);
                 assert_eq!(value.domain_id(), domain_id);
-                assert_eq!(value.denial_count(), 9);
+                assert_eq!(value.denial_count(), 10);
             }
             ExpectedEventKind::FreeRuleset => {
                 let value = expect_event!(event, kind, FreeRuleset);
@@ -981,7 +1008,7 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
         }
     }
     denial_counts.sort_unstable();
-    assert_eq!(denial_counts, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert_eq!(denial_counts, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
     let ruleset = state
         .ruleset(ruleset_id)
@@ -1009,8 +1036,8 @@ fn parent_test() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(domain.ruleset(), Some(RulesetVersion::new(ruleset_id, 2)));
     assert_eq!(domain.no_new_privs(), Some(true));
-    assert_eq!(domain.cumulative_denial_count(), Some(9));
-    assert_eq!(domain.final_denial_count(), Some(9));
+    assert_eq!(domain.cumulative_denial_count(), Some(10));
+    assert_eq!(domain.final_denial_count(), Some(10));
     assert_eq!(domain.enforcement_event_count(), 1);
     let enforcement = domain
         .enforcement_event(ThreadId::new(enforcing_tid).unwrap())

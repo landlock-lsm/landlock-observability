@@ -75,7 +75,7 @@ struct landlock_observability_event {
 			__u64 parent_id;
 			__u32 creator_tgid;
 			char creator_comm[TASK_COMM_LEN];
-			__u8 _count_pad[4];
+			__u32 blockers_type;
 			__u64 num_denials;
 			__u64 blockers_access;
 			__u8 same_exec;
@@ -92,7 +92,7 @@ struct landlock_observability_event {
 			__u64 parent_id;
 			__u32 creator_tgid;
 			char creator_comm[TASK_COMM_LEN];
-			__u8 _count_pad[4];
+			__u32 blockers_type;
 			__u64 num_denials;
 			__u64 blockers_access;
 			__u8 same_exec;
@@ -232,37 +232,37 @@ ASSERT_FIELD(enforce_domain.complete, 28, 1);
 ASSERT_FIELD(enforce_domain.process_wide, 29, 1);
 ASSERT_FIELD(enforce_domain.no_new_privs, 30, 1);
 ASSERT_FIELD(enforce_domain._pad, 31, 1);
-#define ASSERT_DENIAL_HEADER(variant)                 \
+#define ASSERT_DENIAL_HEADER(variant, count_field)    \
 	ASSERT_FIELD(variant.domain_id, 16, 8);       \
 	ASSERT_FIELD(variant.parent_id, 24, 8);       \
 	ASSERT_FIELD(variant.creator_tgid, 32, 4);    \
 	ASSERT_FIELD(variant.creator_comm, 36, 16);   \
-	ASSERT_FIELD(variant._count_pad, 52, 4);      \
+	ASSERT_FIELD(variant.count_field, 52, 4);     \
 	ASSERT_FIELD(variant.num_denials, 56, 8);     \
 	ASSERT_FIELD(variant.blockers_access, 64, 8); \
 	ASSERT_FIELD(variant.same_exec, 72, 1);       \
 	ASSERT_FIELD(variant.logged, 73, 1);          \
 	ASSERT_FIELD(variant._pad, 74, 6)
-ASSERT_DENIAL_HEADER(deny_access_fs);
+ASSERT_DENIAL_HEADER(deny_access_fs, blockers_type);
 ASSERT_FIELD(deny_access_fs.dev, 80, 4);
 ASSERT_FIELD(deny_access_fs.pathname_bytes_omitted, 84, 1);
 ASSERT_FIELD(deny_access_fs._ino_pad, 85, 3);
 ASSERT_FIELD(deny_access_fs.ino, 88, 8);
 ASSERT_FIELD(deny_access_fs.pathname, 96, 256);
-ASSERT_DENIAL_HEADER(deny_access_net);
+ASSERT_DENIAL_HEADER(deny_access_net, blockers_type);
 ASSERT_FIELD(deny_access_net.sport, 80, 8);
 ASSERT_FIELD(deny_access_net.dport, 88, 8);
-ASSERT_DENIAL_HEADER(deny_ptrace);
+ASSERT_DENIAL_HEADER(deny_ptrace, _count_pad);
 ASSERT_FIELD(deny_ptrace.tracee_domain_id, 80, 8);
 ASSERT_FIELD(deny_ptrace.tracee_pid, 88, 4);
 ASSERT_FIELD(deny_ptrace.tracee_comm, 92, 16);
 ASSERT_FIELD(deny_ptrace._tail_pad, 108, 4);
-ASSERT_DENIAL_HEADER(deny_scope_signal);
+ASSERT_DENIAL_HEADER(deny_scope_signal, _count_pad);
 ASSERT_FIELD(deny_scope_signal.target_domain_id, 80, 8);
 ASSERT_FIELD(deny_scope_signal.target_pid, 88, 4);
 ASSERT_FIELD(deny_scope_signal.target_comm, 92, 16);
 ASSERT_FIELD(deny_scope_signal._tail_pad, 108, 4);
-ASSERT_DENIAL_HEADER(deny_scope_abstract_unix_socket);
+ASSERT_DENIAL_HEADER(deny_scope_abstract_unix_socket, _count_pad);
 ASSERT_FIELD(deny_scope_abstract_unix_socket.peer_domain_id, 80, 8);
 ASSERT_FIELD(deny_scope_abstract_unix_socket.peer_pid, 88, 4);
 ASSERT_FIELD(deny_scope_abstract_unix_socket.abstract_name_len, 92, 4);

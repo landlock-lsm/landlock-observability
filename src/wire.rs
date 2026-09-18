@@ -4,8 +4,8 @@ use std::error::Error;
 use std::fmt;
 
 use crate::event::{
-    AddRuleNetPortEvent, AddRulePathBeneathEvent, CapturedAbstractUnixSocketName, CapturedBytes,
-    CapturedBytesError, CapturedBytesOrigin, CapturedCommand, CreateDomainEvent,
+    AddRuleNetPortEvent, AddRulePathBeneathEvent, BlockerType, CapturedAbstractUnixSocketName,
+    CapturedBytes, CapturedBytesError, CapturedBytesOrigin, CapturedCommand, CreateDomainEvent,
     CreateRulesetEvent, DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
     DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, DomainId, DomainMembership,
     EnforceDomainEvent, Event, FilesystemAccess, FreeDomainEvent, FreeRulesetEvent,
@@ -360,6 +360,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
             DenyAccessFsEvent::builder()
                 .timestamp(timestamp)
                 .context(denial_context(data)?)
+                .blockers_type(BlockerType::from_raw(u32_at(data, 52, "blockers_type")?))
                 .blockers_access(FilesystemAccess::from_bits(u64_at(
                     data,
                     64,
@@ -381,6 +382,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
             DenyAccessNetEvent::builder()
                 .timestamp(timestamp)
                 .context(denial_context(data)?)
+                .blockers_type(BlockerType::from_raw(u32_at(data, 52, "blockers_type")?))
                 .blockers_access(NetworkAccess::from_bits(u64_at(
                     data,
                     64,
@@ -638,6 +640,7 @@ mod tests {
                         true,
                         false,
                     ))
+                    .blockers_type(BlockerType::FS_ACCESS)
                     .blockers_access(FilesystemAccess::from_bits(0x8000000080010005))
                     .device(0x72000005)
                     .inode(0x8300000000000005)
@@ -656,6 +659,7 @@ mod tests {
                         false,
                         true,
                     ))
+                    .blockers_type(BlockerType::NET_ACCESS)
                     .blockers_access(NetworkAccess::from_bits(0x8000000080010006))
                     .source_port(0x7400000000000006)
                     .destination_port(0x8500000000000006)
@@ -848,6 +852,7 @@ mod tests {
             0xC100000000000005,
             (true, false),
         );
+        assert_eq!(value.blockers_type(), BlockerType::FS_ACCESS);
         assert_eq!(value.blockers_access().bits(), 0x8000000080010005);
         assert_eq!(value.device(), 0x72000005);
         assert_eq!(value.inode(), 0x8300000000000005);
@@ -866,6 +871,7 @@ mod tests {
             0xC100000000000006,
             (false, true),
         );
+        assert_eq!(value.blockers_type(), BlockerType::NET_ACCESS);
         assert_eq!(value.blockers_access().bits(), 0x8000000080010006);
         assert_eq!(value.source_port(), 0x7400000000000006);
         assert_eq!(value.destination_port(), 0x8500000000000006);
@@ -959,6 +965,17 @@ mod tests {
         assert!(value.complete());
         assert!(!value.process_wide());
         assert!(value.no_new_privs());
+    }
+
+    #[test]
+    fn preserves_unknown_blocker_types() {
+        let mut data = FIXTURES[4].to_vec();
+        data[52..56].copy_from_slice(&u32::MAX.to_ne_bytes());
+        let Event::DenyAccessFs(value) = decode(&data).unwrap() else {
+            panic!()
+        };
+        assert_eq!(value.blockers_type().raw(), u32::MAX);
+        assert_eq!(value.blockers_access().bits(), 0x8000000080010005);
     }
 
     #[test]

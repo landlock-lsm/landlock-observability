@@ -23,6 +23,7 @@ libbpf-cargo = "0.27"
 [dev-dependencies]
 landlock = "0.4.7"
 nix = { version = "0.31", default-features = false, features = [
+    "mount",
     "process",
     "ptrace",
     "signal",

@@ -4,9 +4,9 @@ use landlock_observability::collector::{
     CollectorConfig, CollectorReceiveErrorKind, ReceiveTimeoutError, TryReceiveError,
 };
 use landlock_observability::event::{
-    CreateRulesetEvent, DenyScopeAbstractUnixSocketEvent, DomainId, DomainMembership,
-    EnforceDomainEvent, Event, FilesystemAccess, KernelTimestamp, NetworkAccess, ProcessId,
-    RulesetId, ScopeAccess, ThreadId, MIN_LANDLOCK_ID,
+    BlockerType, CreateRulesetEvent, DenyScopeAbstractUnixSocketEvent, DomainId, DomainMembership,
+    EnforceDomainEvent, Event, FilesystemAccess, FilesystemBlockers, KernelTimestamp,
+    NetworkAccess, ProcessId, RulesetId, ScopeAccess, ThreadId, MIN_LANDLOCK_ID,
 };
 use landlock_observability::state::{DomainParent, LifecycleState, RulesetVersion, State};
 
@@ -42,6 +42,23 @@ fn try_receive_kind(error: TryReceiveError) -> Option<CollectorReceiveErrorKind>
 
 fn peer_pid(event: &DenyScopeAbstractUnixSocketEvent) -> Option<ProcessId> {
     event.peer_pid()
+}
+
+fn assert_other_filesystem_blockers(
+    blockers: FilesystemBlockers,
+    expected_type: BlockerType,
+    expected_access: FilesystemAccess,
+) {
+    let FilesystemBlockers::Other {
+        request_type,
+        access,
+        ..
+    } = blockers
+    else {
+        panic!("expected unrecognized filesystem blockers");
+    };
+    assert_eq!(request_type, expected_type);
+    assert_eq!(access, expected_access);
 }
 
 fn timeout_kind(error: ReceiveTimeoutError) -> Option<CollectorReceiveErrorKind> {
@@ -101,6 +118,45 @@ fn task_ids_are_checked_and_peer_pid_is_optional() {
     assert_eq!(ProcessId::new(0).unwrap_err().value(), 0);
 
     let _peer_accessor: fn(&DenyScopeAbstractUnixSocketEvent) -> Option<ProcessId> = peer_pid;
+}
+
+#[test]
+fn blocker_types_preserve_known_and_unknown_values() {
+    assert_eq!(BlockerType::PTRACE.raw(), 1);
+    assert_eq!(BlockerType::FS_CHANGE_TOPOLOGY.raw(), 2);
+    assert_eq!(BlockerType::FS_ACCESS.raw(), 3);
+    assert_eq!(BlockerType::NET_ACCESS.raw(), 4);
+    assert_eq!(BlockerType::SCOPE_ABSTRACT_UNIX_SOCKET.raw(), 5);
+    assert_eq!(BlockerType::SCOPE_SIGNAL.raw(), 6);
+    let unknown = BlockerType::from_raw(u32::MAX);
+    assert_eq!(unknown.raw(), u32::MAX);
+    assert_ne!(unknown, BlockerType::FS_ACCESS);
+}
+
+#[test]
+fn filesystem_blocker_classification_preserves_complete_observations() {
+    let high_access = FilesystemAccess::from_bits(0x8000_0000_0000_0004);
+    assert_eq!(
+        FilesystemBlockers::classify(BlockerType::FS_ACCESS, high_access),
+        FilesystemBlockers::Access(high_access)
+    );
+    assert_eq!(
+        FilesystemBlockers::classify(
+            BlockerType::FS_CHANGE_TOPOLOGY,
+            FilesystemAccess::from_bits(0),
+        ),
+        FilesystemBlockers::ChangeTopology
+    );
+    assert_other_filesystem_blockers(
+        FilesystemBlockers::classify(BlockerType::FS_CHANGE_TOPOLOGY, high_access),
+        BlockerType::FS_CHANGE_TOPOLOGY,
+        high_access,
+    );
+    assert_other_filesystem_blockers(
+        FilesystemBlockers::classify(BlockerType::from_raw(u32::MAX), high_access),
+        BlockerType::from_raw(u32::MAX),
+        high_access,
+    );
 }
 
 #[test]

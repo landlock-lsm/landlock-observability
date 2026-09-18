@@ -357,6 +357,7 @@ int BPF_PROG(handle_deny_access_fs, const struct landlock_hierarchy *hierarchy,
 			 &ev->deny_access_fs.creator_tgid,
 			 ev->deny_access_fs.creator_comm,
 			 &ev->deny_access_fs.num_denials, hierarchy);
+	ev->deny_access_fs.blockers_type = blockers->type;
 	ev->deny_access_fs.blockers_access = blockers->access;
 	ev->deny_access_fs.same_exec = same_exec;
 	ev->deny_access_fs.logged = logged;
@@ -395,6 +396,7 @@ int BPF_PROG(handle_deny_access_net, const struct landlock_hierarchy *hierarchy,
 			 &ev->deny_access_net.creator_tgid,
 			 ev->deny_access_net.creator_comm,
 			 &ev->deny_access_net.num_denials, hierarchy);
+	ev->deny_access_net.blockers_type = blockers->type;
 	ev->deny_access_net.blockers_access = blockers_access;
 	ev->deny_access_net.same_exec = same_exec;
 	ev->deny_access_net.logged = logged;

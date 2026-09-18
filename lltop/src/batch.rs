@@ -4,8 +4,8 @@ use std::io::{self, Write};
 
 use landlock_observability::aggregate::{AggregatedDenial, DenialAggregator};
 use landlock_observability::event::{
-    CapturedBytes, CapturedBytesOrigin, Denial, DomainId, DomainMembership, Event,
-    FilesystemAccess, NetworkAccess, RulesetId,
+    BlockerType, CapturedBytes, CapturedBytesOrigin, Denial, DomainId, DomainMembership, Event,
+    FilesystemBlockers, NetworkAccess, RulesetId,
 };
 use landlock_observability::state::{
     DomainParent, DomainState, LifecycleState, RulesetVersion, State,
@@ -313,20 +313,48 @@ fn escape<K: CapturedBytesOrigin>(value: &CapturedBytes<K>) -> String {
     escaped
 }
 
-fn filesystem_blockers(access: FilesystemAccess) -> String {
-    access_blockers(
-        "FS",
-        access.known_names().map(|name| name.as_str()),
-        access.unknown_bits(),
-    )
+fn filesystem_blockers(blockers: FilesystemBlockers) -> String {
+    match blockers {
+        FilesystemBlockers::Access(access) => access_blockers(
+            "FS",
+            access.known_names().map(|name| name.as_str()),
+            access.unknown_bits(),
+        ),
+        FilesystemBlockers::ChangeTopology => "FS:change_topology".to_owned(),
+        FilesystemBlockers::Other {
+            request_type,
+            access,
+            ..
+        } if request_type == BlockerType::FS_CHANGE_TOPOLOGY => {
+            format!("FS:change_topology,access=0x{:x}", access.bits())
+        }
+        FilesystemBlockers::Other {
+            request_type,
+            access,
+            ..
+        } => format!(
+            "FS:request_type=0x{:x},access=0x{:x}",
+            request_type.raw(),
+            access.bits()
+        ),
+        _ => "FS:unknown".to_owned(),
+    }
 }
 
-fn network_blockers(access: NetworkAccess) -> String {
-    access_blockers(
-        "Net",
-        access.known_names().map(|name| name.as_str()),
-        access.unknown_bits(),
-    )
+fn network_blockers(blockers_type: BlockerType, access: NetworkAccess) -> String {
+    if blockers_type == BlockerType::NET_ACCESS {
+        access_blockers(
+            "Net",
+            access.known_names().map(|name| name.as_str()),
+            access.unknown_bits(),
+        )
+    } else {
+        format!(
+            "Net:request_type=0x{:x},access=0x{:x}",
+            blockers_type.raw(),
+            access.bits()
+        )
+    }
 }
 
 fn access_blockers<'a>(
@@ -374,15 +402,17 @@ fn denial_fields(event: &Event) -> Option<DenialFields> {
     match event {
         Event::DenyAccessFs(event) => Some((
             event.context().hierarchy().domain_id(),
-            filesystem_blockers(event.blockers_access()),
+            filesystem_blockers(event.blockers()),
             escape(event.pathname()),
             None,
         )),
         Event::DenyAccessNet(event) => {
             let (mut has_bind, mut has_connect) = (false, false);
-            for name in event.blockers_access().known_names() {
-                has_bind |= name.as_str().starts_with("bind_");
-                has_connect |= name.as_str().starts_with("connect_");
+            if event.blockers_type() == BlockerType::NET_ACCESS {
+                for name in event.blockers_access().known_names() {
+                    has_bind |= name.as_str().starts_with("bind_");
+                    has_connect |= name.as_str().starts_with("connect_");
+                }
             }
             let target = match (has_bind, has_connect) {
                 (true, false) => format!("sport:{}", event.source_port()),
@@ -395,7 +425,7 @@ fn denial_fields(event: &Event) -> Option<DenialFields> {
             };
             Some((
                 event.context().hierarchy().domain_id(),
-                network_blockers(event.blockers_access()),
+                network_blockers(event.blockers_type(), event.blockers_access()),
                 target,
                 None,
             ))
@@ -469,6 +499,7 @@ fn format_stats(allocated: usize, total: usize, stats: &Stats) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use landlock_observability::event::FilesystemAccess;
     use landlock_observability::event::{
         CapturedPath, CreateDomainEvent, DenialContext, DenyAccessFsEvent, DenyAccessNetEvent,
         DenyPtraceEvent, DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent,
@@ -512,10 +543,15 @@ mod tests {
     }
 
     fn fs(seconds: u64, blockers: u64, path: &[u8]) -> Event {
+        fs_type(seconds, BlockerType::FS_ACCESS, blockers, path)
+    }
+
+    fn fs_type(seconds: u64, blockers_type: BlockerType, blockers: u64, path: &[u8]) -> Event {
         Event::DenyAccessFs(
             DenyAccessFsEvent::builder()
                 .timestamp(timestamp(seconds))
                 .context(context(0x10, None, seconds))
+                .blockers_type(blockers_type)
                 .blockers_access(FilesystemAccess::from_bits(blockers))
                 .device(1)
                 .inode(2)
@@ -678,6 +714,7 @@ mod tests {
                 DenyAccessNetEvent::builder()
                     .timestamp(timestamp(2))
                     .context(context(0x10, None, 2))
+                    .blockers_type(BlockerType::NET_ACCESS)
                     .blockers_access(NetworkAccess::from_bits(2))
                     .source_port(0)
                     .destination_port(443)
@@ -759,6 +796,7 @@ mod tests {
                         .logged(true)
                         .build(),
                 )
+                .blockers_type(BlockerType::FS_ACCESS)
                 .blockers_access(FilesystemAccess::from_bits(4))
                 .device(1)
                 .inode(2)
@@ -782,6 +820,7 @@ mod tests {
             DenyAccessNetEvent::builder()
                 .timestamp(timestamp(2))
                 .context(context(0x10, None, 2))
+                .blockers_type(BlockerType::NET_ACCESS)
                 .blockers_access(NetworkAccess::from_bits(0x8000_0000_0000_0001))
                 .source_port(7)
                 .destination_port(9)
@@ -814,12 +853,37 @@ mod tests {
     }
 
     #[test]
+    fn blocker_types_are_not_access_masks() {
+        let mut batch = Batch::new();
+        let topology = batch.process(&fs_type(1, BlockerType::FS_CHANGE_TOPOLOGY, 0, b"/"));
+        let unknown = batch.process(&fs_type(2, BlockerType::from_raw(0xfeed), 4, b"/unknown"));
+        assert!(topology
+            .iter()
+            .any(|line| line.contains("blockers=FS:change_topology target=/")));
+        assert!(unknown
+            .iter()
+            .any(|line| line.contains("blockers=FS:request_type=0xfeed,access=0x4")));
+        assert_eq!(
+            filesystem_blockers(FilesystemBlockers::classify(
+                BlockerType::FS_CHANGE_TOPOLOGY,
+                FilesystemAccess::from_bits(4),
+            )),
+            "FS:change_topology,access=0x4"
+        );
+        assert_eq!(
+            network_blockers(BlockerType::from_raw(0xbeef), NetworkAccess::from_bits(2)),
+            "Net:request_type=0xbeef,access=0x2"
+        );
+    }
+
+    #[test]
     fn network_target_direction_comes_from_access_even_for_zero_ports() {
         let mut batch = Batch::new();
         let bind = Event::DenyAccessNet(
             DenyAccessNetEvent::builder()
                 .timestamp(timestamp(1))
                 .context(context(1, None, 1))
+                .blockers_type(BlockerType::NET_ACCESS)
                 .blockers_access(NetworkAccess::from_bits(4))
                 .source_port(0)
                 .destination_port(99)
@@ -831,6 +895,7 @@ mod tests {
             DenyAccessNetEvent::builder()
                 .timestamp(timestamp(2))
                 .context(context(1, None, 2))
+                .blockers_type(BlockerType::NET_ACCESS)
                 .blockers_access(NetworkAccess::from_bits(8))
                 .source_port(99)
                 .destination_port(0)
@@ -842,6 +907,7 @@ mod tests {
             DenyAccessNetEvent::builder()
                 .timestamp(timestamp(3))
                 .context(context(1, None, 3))
+                .blockers_type(BlockerType::NET_ACCESS)
                 .blockers_access(NetworkAccess::from_bits(0x8000_0000_0000_0000))
                 .source_port(7)
                 .destination_port(8)
