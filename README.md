@@ -317,9 +317,11 @@ succeeds only after all of them are loaded and attached:
 
 The high-volume `landlock_check_rule` family is intentionally not collected.
 Generation 1 uses the corrected callback signatures, but the current typed API
-still exposes only the earlier semantic field set.  It does not yet expose
-add-rule flags, denial request types, complete checked network addresses,
-ptrace tracers, or signal numbers.  Network denials temporarily project the
+still exposes only part of the corrected semantic field set.  Filesystem and
+network denials expose the kernel blocker request type and preserve unknown
+values; filesystem topology changes are distinct from configurable access
+checks.  The API does not yet expose add-rule flags, complete checked network
+addresses, ptrace tracers, or signal numbers.  Network denials temporarily project the
 single authoritative checked port into the existing source or destination
 accessors for recognized bind and connect/send rights; zero also represents an
 address without a port.

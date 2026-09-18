@@ -384,6 +384,95 @@ access_type!(
 );
 access_type!(ScopeAccess, ScopeAccessName, SCOPE_NAMES, "scope mask.");
 
+/// The kernel request category that caused a denial.
+///
+/// Known values are exposed as associated constants.  Unknown values remain
+/// valid observations and round-trip through [`Self::from_raw`] and
+/// [`Self::raw`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub struct BlockerType(u32);
+
+impl BlockerType {
+    /// A ptrace request.
+    pub const PTRACE: Self = Self(1);
+    /// A filesystem mount-topology change.
+    pub const FS_CHANGE_TOPOLOGY: Self = Self(2);
+    /// A configurable filesystem access request.
+    pub const FS_ACCESS: Self = Self(3);
+    /// A configurable network access request.
+    pub const NET_ACCESS: Self = Self(4);
+    /// An abstract UNIX socket scope request.
+    pub const SCOPE_ABSTRACT_UNIX_SOCKET: Self = Self(5);
+    /// A signal scope request.
+    pub const SCOPE_SIGNAL: Self = Self(6);
+
+    /// Creates a request category while preserving unknown values.
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// Returns the raw kernel request category.
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// The semantic reason a filesystem operation was blocked.
+///
+/// Classification preserves request types and access bits that do not match a
+/// currently defined kernel combination.  In particular, a topology request
+/// with a nonzero access mask remains [`Self::Other`] rather than assigning a
+/// meaning that the observation did not witness.
+///
+/// Use [`Self::classify`] or [`DenyAccessFsEvent::blockers`] to interpret a
+/// complete observed pair.  The invariant-bearing [`Self::Other`] variant
+/// cannot be constructed directly outside this crate.
+///
+/// ```compile_fail
+/// use landlock_observability::event::{
+///     BlockerType, FilesystemAccess, FilesystemBlockers,
+/// };
+///
+/// let _ = FilesystemBlockers::Other {
+///     request_type: BlockerType::FS_ACCESS,
+///     access: FilesystemAccess::from_bits(0),
+/// };
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum FilesystemBlockers {
+    /// Configurable filesystem access rights blocked the operation.
+    Access(FilesystemAccess),
+    /// A filesystem mount-topology change was blocked.
+    ChangeTopology,
+    /// A request and access pair without a defined filesystem interpretation.
+    #[non_exhaustive]
+    Other {
+        /// The raw kernel request type.
+        request_type: BlockerType,
+        /// The raw filesystem access mask.
+        access: FilesystemAccess,
+    },
+}
+
+impl FilesystemBlockers {
+    /// Classifies a complete observed request type and filesystem access mask.
+    pub const fn classify(request_type: BlockerType, access: FilesystemAccess) -> Self {
+        if request_type.raw() == BlockerType::FS_ACCESS.raw() {
+            Self::Access(access)
+        } else if request_type.raw() == BlockerType::FS_CHANGE_TOPOLOGY.raw() && access.bits() == 0
+        {
+            Self::ChangeTopology
+        } else {
+            Self::Other {
+                request_type,
+                access,
+            }
+        }
+    }
+}
+
 /// Whether the other party was unsandboxed or belonged to a Landlock domain.
 ///
 /// A complete event field is either the kernel's zero sentinel or one nonzero
@@ -894,6 +983,7 @@ impl Observation for CreateDomainEvent {
 pub struct DenyAccessFsEvent {
     timestamp: KernelTimestamp,
     context: DenialContext,
+    blockers_type: BlockerType,
     blockers_access: FilesystemAccess,
     device: u32,
     inode: u64,
@@ -903,15 +993,28 @@ typestate_builder!(
     DenyAccessFsEvent, DenyAccessFsEventBuilder, "A typestate builder for [`DenyAccessFsEvent`].";
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     context: Context => DenialContext, "Sets the facts shared by denial events.";
-    blockers_access: Blockers => FilesystemAccess, "Sets the filesystem access rights that blocked the operation.";
+    blockers_type: BlockersType => BlockerType, "Sets the kernel request category that blocked the operation.";
+    blockers_access: BlockersAccess => FilesystemAccess, "Sets the filesystem access rights that blocked the operation.";
     device: Device => u32, "Sets the captured filesystem device number.";
     inode: Inode => u64, "Sets the captured filesystem inode number.";
     pathname: Pathname => CapturedPath, "Sets the captured filesystem pathname.";
 );
 impl DenyAccessFsEvent {
+    /// Returns the kernel request category that blocked the operation.
+    pub const fn blockers_type(&self) -> BlockerType {
+        self.blockers_type
+    }
     /// Returns the access rights that blocked the operation.
+    ///
+    /// This subset is empty for a valid [`BlockerType::FS_CHANGE_TOPOLOGY`]
+    /// observation.  Use [`Self::blockers`] to distinguish defined and
+    /// unrecognized request and mask combinations.
     pub const fn blockers_access(&self) -> FilesystemAccess {
         self.blockers_access
+    }
+    /// Classifies the complete observed blocker pair without losing raw values.
+    pub const fn blockers(&self) -> FilesystemBlockers {
+        FilesystemBlockers::classify(self.blockers_type, self.blockers_access)
     }
     /// Returns the captured filesystem device number.
     pub const fn device(&self) -> u32 {
@@ -944,6 +1047,7 @@ impl Denial for DenyAccessFsEvent {
 pub struct DenyAccessNetEvent {
     timestamp: KernelTimestamp,
     context: DenialContext,
+    blockers_type: BlockerType,
     blockers_access: NetworkAccess,
     source_port: u64,
     destination_port: u64,
@@ -952,11 +1056,16 @@ typestate_builder!(
     DenyAccessNetEvent, DenyAccessNetEventBuilder, "A typestate builder for [`DenyAccessNetEvent`].";
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     context: Context => DenialContext, "Sets the facts shared by denial events.";
-    blockers_access: Blockers => NetworkAccess, "Sets the network access rights that blocked the operation.";
+    blockers_type: BlockersType => BlockerType, "Sets the kernel request category that blocked the operation.";
+    blockers_access: BlockersAccess => NetworkAccess, "Sets the network access rights that blocked the operation.";
     source_port: SourcePort => u64, "Sets the checked port projected for a known bind access, or zero otherwise.";
     destination_port: DestinationPort => u64, "Sets the checked port projected for a known connect or send access, or zero otherwise.";
 );
 impl DenyAccessNetEvent {
+    /// Returns the kernel request category that blocked the operation.
+    pub const fn blockers_type(&self) -> BlockerType {
+        self.blockers_type
+    }
     /// Returns the access rights that blocked the operation.
     pub const fn blockers_access(&self) -> NetworkAccess {
         self.blockers_access
@@ -1328,6 +1437,18 @@ mod tests {
         assert_eq!(context.cumulative_denial_count(), 9);
         assert!(!context.same_exec());
         assert!(context.logged());
+
+        let access = FilesystemAccess::from_bits(1 << 63);
+        let denial = DenyAccessFsEvent::builder()
+            .timestamp(timestamp)
+            .context(context)
+            .blockers_type(BlockerType::FS_ACCESS)
+            .blockers_access(access)
+            .device(10)
+            .inode(11)
+            .pathname(CapturedPath::new(b"/file".to_vec(), false).unwrap())
+            .build();
+        assert_eq!(denial.blockers(), FilesystemBlockers::Access(access));
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use landlock_observability::aggregate::{AggregatedDenial, DenialKey};
-use landlock_observability::event::{DomainId, Event, RulesetId, ScopeAccess};
+use landlock_observability::event::{BlockerType, DomainId, Event, RulesetId, ScopeAccess};
 use landlock_observability::state::{DomainParent, LifecycleState, RulesetVersion};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -627,8 +627,10 @@ fn lifecycle_style(value: LifecycleState) -> Style {
 
 fn blockers_event(event: &Event) -> String {
     match event {
-        Event::DenyAccessFs(event) => format::filesystem(event.blockers_access()),
-        Event::DenyAccessNet(event) => format::network(event.blockers_access()),
+        Event::DenyAccessFs(event) => format::filesystem_blocker(event.blockers()),
+        Event::DenyAccessNet(event) => {
+            format::network_blocker(event.blockers_type(), event.blockers_access())
+        }
         Event::DenyPtrace(_) => "ptrace".to_owned(),
         Event::DenyScopeSignal(_) => format::scope(ScopeAccess::from_bits(1 << 1)),
         Event::DenyScopeAbstractUnixSocket(_) => format::scope(ScopeAccess::from_bits(1 << 0)),
@@ -646,9 +648,11 @@ fn target_event(event: &Event) -> String {
         Event::DenyAccessFs(event) => format::escape(event.pathname()),
         Event::DenyAccessNet(event) => {
             let (mut bind, mut connect) = (false, false);
-            for name in event.blockers_access().known_names() {
-                bind |= name.as_str().starts_with("bind_");
-                connect |= name.as_str().starts_with("connect_");
+            if event.blockers_type() == BlockerType::NET_ACCESS {
+                for name in event.blockers_access().known_names() {
+                    bind |= name.as_str().starts_with("bind_");
+                    connect |= name.as_str().starts_with("connect_");
+                }
             }
             match (bind, connect) {
                 (true, false) => format!("sport:{}", event.source_port()),
@@ -961,7 +965,7 @@ pub(super) fn clicked_tab(area: Rect, column: u16, row: u16) -> Option<Tab> {
 mod tests {
     use super::*;
     use landlock_observability::event::{
-        AddRuleNetPortEvent, AddRulePathBeneathEvent, CapturedAbstractUnixSocketName,
+        AddRuleNetPortEvent, AddRulePathBeneathEvent, BlockerType, CapturedAbstractUnixSocketName,
         CapturedCommand, CapturedPath, CreateDomainEvent, CreateRulesetEvent, Denial,
         DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
         DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, DomainMembership,
@@ -997,6 +1001,7 @@ mod tests {
                         .logged(count & 1 == 0)
                         .build(),
                 )
+                .blockers_type(BlockerType::FS_ACCESS)
                 .blockers_access(FilesystemAccess::from_bits(4))
                 .device(1)
                 .inode(inode)
@@ -1290,6 +1295,7 @@ mod tests {
                             .logged(false)
                             .build(),
                     )
+                    .blockers_type(BlockerType::NET_ACCESS)
                     .blockers_access(NetworkAccess::from_bits(1 << 1))
                     .source_port(0)
                     .destination_port(443)

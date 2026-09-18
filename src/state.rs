@@ -718,10 +718,10 @@ fn update_max<T: Ord + Copy>(current: &mut Option<T>, candidate: T) {
 mod tests {
     use super::*;
     use crate::event::{
-        AddRuleNetPortEvent, AddRulePathBeneathEvent, CreateDomainEvent, CreateRulesetEvent,
-        DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent, DenyScopeAbstractUnixSocketEvent,
-        DenyScopeSignalEvent, EnforceDomainEvent, FreeDomainEvent, FreeRulesetEvent,
-        HierarchySnapshot, MIN_LANDLOCK_ID,
+        AddRuleNetPortEvent, AddRulePathBeneathEvent, BlockerType, CreateDomainEvent,
+        CreateRulesetEvent, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
+        DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, EnforceDomainEvent,
+        FreeDomainEvent, FreeRulesetEvent, HierarchySnapshot, MIN_LANDLOCK_ID,
     };
     use crate::event::{CapturedBytes, CapturedBytesOrigin};
 
@@ -1102,6 +1102,7 @@ mod tests {
                 DenyAccessFsEvent::builder()
                     .timestamp(timestamp(1))
                     .context(context(hierarchy(9, None, 100, b""), 1))
+                    .blockers_type(BlockerType::FS_ACCESS)
                     .blockers_access(FilesystemAccess::from_bits(1))
                     .device(1)
                     .inode(2)
@@ -1123,6 +1124,7 @@ mod tests {
                 DenyAccessFsEvent::builder()
                     .timestamp(timestamp(1))
                     .context(context(hierarchy(10, Some(20), 110, b""), 7))
+                    .blockers_type(BlockerType::FS_ACCESS)
                     .blockers_access(FilesystemAccess::from_bits(1))
                     .device(1)
                     .inode(2)
@@ -1133,6 +1135,7 @@ mod tests {
                 DenyAccessNetEvent::builder()
                     .timestamp(timestamp(2))
                     .context(context(hierarchy(11, None, 111, b"net"), 8))
+                    .blockers_type(BlockerType::NET_ACCESS)
                     .blockers_access(NetworkAccess::from_bits(1))
                     .source_port(10)
                     .destination_port(20)
@@ -1175,6 +1178,7 @@ mod tests {
                 DenyAccessFsEvent::builder()
                     .timestamp(timestamp(6))
                     .context(context(hierarchy(10, Some(20), 110, b""), 7))
+                    .blockers_type(BlockerType::FS_ACCESS)
                     .blockers_access(FilesystemAccess::from_bits(1))
                     .device(1)
                     .inode(2)
@@ -1223,6 +1227,7 @@ mod tests {
                 DenyAccessFsEvent::builder()
                     .timestamp(timestamp(30))
                     .context(context(hierarchy(30, Some(31), 300, b"inferred"), 50))
+                    .blockers_type(BlockerType::FS_ACCESS)
                     .blockers_access(FilesystemAccess::from_bits(1))
                     .device(1)
                     .inode(2)

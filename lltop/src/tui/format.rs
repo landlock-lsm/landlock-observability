@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use landlock_observability::event::{
-    CapturedBytes, CapturedBytesOrigin, FilesystemAccess, KernelTimestamp, NetworkAccess,
-    ScopeAccess,
+    BlockerType, CapturedBytes, CapturedBytesOrigin, FilesystemAccess, FilesystemBlockers,
+    KernelTimestamp, NetworkAccess, ScopeAccess,
 };
 use ratatui::text::Span;
 
@@ -49,6 +49,42 @@ pub(super) fn filesystem(value: FilesystemAccess) -> String {
 
 pub(super) fn network(value: NetworkAccess) -> String {
     format!("Net: {}", network_rights(value))
+}
+
+pub(super) fn filesystem_blocker(blockers: FilesystemBlockers) -> String {
+    match blockers {
+        FilesystemBlockers::Access(access) => filesystem(access),
+        FilesystemBlockers::ChangeTopology => "FS: change_topology".to_owned(),
+        FilesystemBlockers::Other {
+            request_type,
+            access,
+            ..
+        } if request_type == BlockerType::FS_CHANGE_TOPOLOGY => {
+            format!("FS: change_topology, access=0x{:x}", access.bits())
+        }
+        FilesystemBlockers::Other {
+            request_type,
+            access,
+            ..
+        } => format!(
+            "FS: request_type=0x{:x}, access=0x{:x}",
+            request_type.raw(),
+            access.bits()
+        ),
+        _ => "FS: unknown".to_owned(),
+    }
+}
+
+pub(super) fn network_blocker(blockers_type: BlockerType, access: NetworkAccess) -> String {
+    if blockers_type == BlockerType::NET_ACCESS {
+        network(access)
+    } else {
+        format!(
+            "Net: request_type=0x{:x}, access=0x{:x}",
+            blockers_type.raw(),
+            access.bits()
+        )
+    }
 }
 
 pub(super) fn scope(value: ScopeAccess) -> String {
@@ -129,6 +165,31 @@ mod tests {
         assert_eq!(filesystem(fs_access), "FS: read_file, 0x8000000000000000");
         assert_eq!(network(net_access), "Net: connect_tcp, 0x8000000000000000");
         assert_eq!(scope(scoped), "Scope: signal, 0x8000000000000000");
+        assert_eq!(
+            filesystem_blocker(FilesystemBlockers::classify(
+                BlockerType::FS_CHANGE_TOPOLOGY,
+                FilesystemAccess::from_bits(0),
+            )),
+            "FS: change_topology"
+        );
+        assert_eq!(
+            filesystem_blocker(FilesystemBlockers::classify(
+                BlockerType::FS_CHANGE_TOPOLOGY,
+                FilesystemAccess::from_bits(4),
+            )),
+            "FS: change_topology, access=0x4"
+        );
+        assert_eq!(
+            filesystem_blocker(FilesystemBlockers::classify(
+                BlockerType::from_raw(0xfeed),
+                fs_access,
+            )),
+            "FS: request_type=0xfeed, access=0x8000000000000004"
+        );
+        assert_eq!(
+            network_blocker(BlockerType::from_raw(0xbeef), net_access),
+            "Net: request_type=0xbeef, access=0x8000000000000002"
+        );
     }
 
     #[test]

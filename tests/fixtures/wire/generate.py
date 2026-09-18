@@ -47,6 +47,10 @@ def denial(
         else f"creator-{seed}\0tail".encode().ljust(16, b"!")
     )
     fixed(data, 36, 16, creator_comm)
+    if seed == 5:
+        u32(data, 52, 3, byte_order)
+    elif seed == 6:
+        u32(data, 52, 4, byte_order)
     u64(data, 56, 0xC100000000000000 + seed, byte_order)
     u64(data, 64, 0x8000000080010000 + seed, byte_order)
     data[72] = same_exec

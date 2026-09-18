@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
-# Check the compiled, pre-relocation access-mask load and storage shape.
+# Check compiled, pre-relocation scalar load and storage widths and shapes.
 
 set -e -u -o pipefail
 
@@ -42,6 +42,18 @@ check_direct_u64_load()
 	fi
 }
 
+check_direct_u32_load()
+{
+	local marker=$1
+	local excerpt
+	excerpt=$(grep -F -A2 "$marker" <<<"$dump")
+	if ! grep -Eq '= \*\(u32 \*\)\(r[0-9]+ \+ 0x8\)$' <<<"$excerpt"; then
+		printf 'error: no direct u32 blocker-type load after %s\n%s\n' \
+			"$marker" "$excerpt" >&2
+		exit 1
+	fi
+}
+
 check_u64_store()
 {
 	local marker=$1
@@ -66,6 +78,19 @@ check_ruleset_version_reads()
 	if [[ $count != 5 ]]; then
 		printf 'error: expected five u64 CO-RE ruleset-version reads, found %s\n%s\n' \
 			"$count" "$excerpt" >&2
+		exit 1
+	fi
+}
+
+check_u32_store()
+{
+	local marker=$1
+	local excerpt
+	excerpt=$(grep -F -A2 "$marker" <<<"$dump")
+	if ! grep -Eq '\*\(u32 \*\)\(r[0-9]+ \+ 0x34\) = [rw][0-9]+$' \
+		<<<"$excerpt"; then
+		printf 'error: no u32 blocker-type wire store after %s\n%s\n' \
+			"$marker" "$excerpt" >&2
 		exit 1
 	fi
 }
@@ -110,6 +135,10 @@ check_u64_store \
 
 check_direct_u64_load 'ev->deny_access_fs.blockers_access = blockers->access;'
 check_direct_u64_load 'const __u64 blockers_access = blockers->access;'
+check_direct_u32_load 'ev->deny_access_fs.blockers_type = blockers->type;'
+check_direct_u32_load 'ev->deny_access_net.blockers_type = blockers->type;'
+check_u32_store 'ev->deny_access_fs.blockers_type = blockers->type;'
+check_u32_store 'ev->deny_access_net.blockers_type = blockers->type;'
 
 check_u64_store 'ev->create_ruleset.handled_fs =' 0x20
 check_u64_store 'ev->create_ruleset.handled_net =' 0x28

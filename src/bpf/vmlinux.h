@@ -65,8 +65,18 @@ struct landlock_domain {
 	struct landlock_hierarchy *hierarchy;
 } __attribute__((preserve_access_index));
 
+enum landlock_request_type {
+	LANDLOCK_REQUEST_PTRACE = 1,
+	LANDLOCK_REQUEST_FS_CHANGE_TOPOLOGY,
+	LANDLOCK_REQUEST_FS_ACCESS,
+	LANDLOCK_REQUEST_NET_ACCESS,
+	LANDLOCK_REQUEST_SCOPE_ABSTRACT_UNIX_SOCKET,
+	LANDLOCK_REQUEST_SCOPE_SIGNAL,
+};
+
 struct landlock_blockers {
 	u64 access;
+	enum landlock_request_type type;
 } __attribute__((preserve_access_index));
 
 /*

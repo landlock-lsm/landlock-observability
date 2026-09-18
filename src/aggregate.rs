@@ -3,8 +3,9 @@
 //! Optional bounded aggregation of Landlock denial events.
 
 use crate::event::{
-    CapturedAbstractUnixSocketName, CapturedCommand, Denial, DomainId, DomainMembership, Event,
-    FilesystemAccess, KernelTimestamp, NetworkAccess, Observation, ProcessId,
+    BlockerType, CapturedAbstractUnixSocketName, CapturedCommand, Denial, DomainId,
+    DomainMembership, Event, FilesystemAccess, FilesystemBlockers, KernelTimestamp, NetworkAccess,
+    Observation, ProcessId,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -17,6 +18,7 @@ const DEFAULT_CAPACITY: usize = 1000;
 #[non_exhaustive]
 pub struct FilesystemDenialKey {
     domain_id: DomainId,
+    blockers_type: BlockerType,
     blockers_access: FilesystemAccess,
     device: u32,
     inode: u64,
@@ -26,12 +28,14 @@ impl FilesystemDenialKey {
     /// Creates a filesystem denial key.
     pub const fn new(
         domain_id: DomainId,
+        blockers_type: BlockerType,
         blockers_access: FilesystemAccess,
         device: u32,
         inode: u64,
     ) -> Self {
         Self {
             domain_id,
+            blockers_type,
             blockers_access,
             device,
             inode,
@@ -43,9 +47,19 @@ impl FilesystemDenialKey {
         self.domain_id
     }
 
+    /// Returns the kernel request category that blocked the operation.
+    pub const fn blockers_type(&self) -> BlockerType {
+        self.blockers_type
+    }
+
     /// Returns the access rights that blocked the operation.
     pub const fn blockers_access(&self) -> FilesystemAccess {
         self.blockers_access
+    }
+
+    /// Classifies the complete observed blocker pair without losing raw values.
+    pub const fn blockers(&self) -> FilesystemBlockers {
+        FilesystemBlockers::classify(self.blockers_type, self.blockers_access)
     }
 
     /// Returns the captured filesystem device number.
@@ -64,6 +78,7 @@ impl FilesystemDenialKey {
 #[non_exhaustive]
 pub struct NetworkDenialKey {
     domain_id: DomainId,
+    blockers_type: BlockerType,
     blockers_access: NetworkAccess,
     source_port: u64,
     destination_port: u64,
@@ -73,12 +88,14 @@ impl NetworkDenialKey {
     /// Creates a network denial key.
     pub const fn new(
         domain_id: DomainId,
+        blockers_type: BlockerType,
         blockers_access: NetworkAccess,
         source_port: u64,
         destination_port: u64,
     ) -> Self {
         Self {
             domain_id,
+            blockers_type,
             blockers_access,
             source_port,
             destination_port,
@@ -88,6 +105,11 @@ impl NetworkDenialKey {
     /// Returns the denying domain identity.
     pub const fn domain_id(&self) -> DomainId {
         self.domain_id
+    }
+
+    /// Returns the kernel request category that blocked the operation.
+    pub const fn blockers_type(&self) -> BlockerType {
+        self.blockers_type
     }
 
     /// Returns the access rights that blocked the operation.
@@ -564,6 +586,7 @@ fn denial_facts(event: &Event) -> Option<(DenialKey, bool, bool)> {
         Event::DenyAccessFs(denial) => (
             DenialKey::Filesystem(FilesystemDenialKey::new(
                 denial.context().hierarchy().domain_id(),
+                denial.blockers_type(),
                 denial.blockers_access(),
                 denial.device(),
                 denial.inode(),
@@ -573,6 +596,7 @@ fn denial_facts(event: &Event) -> Option<(DenialKey, bool, bool)> {
         Event::DenyAccessNet(denial) => (
             DenialKey::Network(NetworkDenialKey::new(
                 denial.context().hierarchy().domain_id(),
+                denial.blockers_type(),
                 denial.blockers_access(),
                 denial.source_port(),
                 denial.destination_port(),
@@ -657,10 +681,31 @@ mod tests {
         target: (u32, u64, &[u8]),
         flags: (bool, bool),
     ) -> Event {
+        fs_with_type(
+            timestamp,
+            domain_offset,
+            cumulative,
+            BlockerType::FS_ACCESS,
+            blockers_access,
+            target,
+            flags,
+        )
+    }
+
+    fn fs_with_type(
+        timestamp: u64,
+        domain_offset: u64,
+        cumulative: u64,
+        blockers_type: BlockerType,
+        blockers_access: u64,
+        target: (u32, u64, &[u8]),
+        flags: (bool, bool),
+    ) -> Event {
         Event::DenyAccessFs(
             DenyAccessFsEvent::builder()
                 .timestamp(KernelTimestamp::from_nanoseconds(timestamp))
                 .context(context(domain_offset, cumulative, flags.0, flags.1))
+                .blockers_type(blockers_type)
                 .blockers_access(FilesystemAccess::from_bits(blockers_access))
                 .device(target.0)
                 .inode(target.1)
@@ -679,6 +724,7 @@ mod tests {
             DenyAccessNetEvent::builder()
                 .timestamp(KernelTimestamp::from_nanoseconds(timestamp))
                 .context(context(domain_offset, 1, false, true))
+                .blockers_type(BlockerType::NET_ACCESS)
                 .blockers_access(NetworkAccess::from_bits(blockers_access))
                 .source_port(ports.0)
                 .destination_port(ports.1)
@@ -736,12 +782,14 @@ mod tests {
         assert_eq!(aggregator.len(), 5);
         let fs_key = DenialKey::Filesystem(FilesystemDenialKey::new(
             DomainId::new(MIN_LANDLOCK_ID + 10).unwrap(),
+            BlockerType::FS_ACCESS,
             FilesystemAccess::from_bits(0x8000_0000_0000_0001),
             2,
             3,
         ));
         let network_key = DenialKey::Network(NetworkDenialKey::new(
             DomainId::new(MIN_LANDLOCK_ID + 11).unwrap(),
+            BlockerType::NET_ACCESS,
             NetworkAccess::from_bits(0x8000_0000_0000_0002),
             100,
             200,
@@ -776,11 +824,13 @@ mod tests {
         let DenialKey::Filesystem(key) = fs_key else {
             panic!("filesystem key changed variant");
         };
+        assert_eq!(key.blockers_type(), BlockerType::FS_ACCESS);
         assert_eq!(key.blockers_access().bits(), 0x8000_0000_0000_0001);
         assert_eq!((key.device(), key.inode()), (2, 3));
         let DenialKey::Network(key) = network_key else {
             panic!("network key changed variant");
         };
+        assert_eq!(key.blockers_type(), BlockerType::NET_ACCESS);
         assert_eq!(key.blockers_access().bits(), 0x8000_0000_0000_0002);
         assert_eq!((key.source_port(), key.destination_port()), (100, 200));
         let DenialKey::Ptrace(key) = ptrace_key else {
@@ -806,6 +856,52 @@ mod tests {
             DomainMembership::Sandboxed(DomainId::new(MIN_LANDLOCK_ID + 21).unwrap())
         );
         assert_eq!(key.abstract_name().as_bytes(), b"service\0v1");
+    }
+
+    #[test]
+    fn blocker_type_is_aggregation_identity() {
+        let access = fs(1, 7, 1, 0, (2, 3, b"/target"), (true, true));
+        let topology = fs_with_type(
+            2,
+            7,
+            2,
+            BlockerType::FS_CHANGE_TOPOLOGY,
+            0,
+            (2, 3, b"/target"),
+            (true, true),
+        );
+        let unknown = fs_with_type(
+            3,
+            7,
+            3,
+            BlockerType::from_raw(u32::MAX),
+            0,
+            (2, 3, b"/target"),
+            (true, true),
+        );
+        let mut aggregator = DenialAggregator::new();
+        aggregator.observe(&access);
+        aggregator.observe(&topology);
+        aggregator.observe(&unknown);
+
+        assert_eq!(aggregator.len(), 3);
+        let types = aggregator
+            .entries()
+            .map(|entry| match entry.key() {
+                DenialKey::Filesystem(key) => key.blockers_type().raw(),
+                _ => panic!("unexpected key"),
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(types, [2, 3, u32::MAX].into_iter().collect());
+        let topology = aggregator.entries().find_map(|entry| match entry.key() {
+            DenialKey::Filesystem(key)
+                if key.blockers_type() == BlockerType::FS_CHANGE_TOPOLOGY =>
+            {
+                Some(key.blockers())
+            }
+            _ => None,
+        });
+        assert_eq!(topology, Some(FilesystemBlockers::ChangeTopology));
     }
 
     #[test]
@@ -1022,12 +1118,14 @@ mod tests {
         let third = fs(1, 3, 1, 1, (1, 1, b"/third"), (false, false));
         let first_key = DenialKey::Filesystem(FilesystemDenialKey::new(
             DomainId::new(MIN_LANDLOCK_ID + 1).unwrap(),
+            BlockerType::FS_ACCESS,
             FilesystemAccess::from_bits(1),
             1,
             1,
         ));
         let second_key = DenialKey::Filesystem(FilesystemDenialKey::new(
             DomainId::new(MIN_LANDLOCK_ID + 2).unwrap(),
+            BlockerType::FS_ACCESS,
             FilesystemAccess::from_bits(1),
             1,
             1,
@@ -1059,18 +1157,21 @@ mod tests {
         let third = fs(7, 3, 1, 1, (1, 1, b"/third"), (false, false));
         let first_key = DenialKey::Filesystem(FilesystemDenialKey::new(
             DomainId::new(MIN_LANDLOCK_ID + 1).unwrap(),
+            BlockerType::FS_ACCESS,
             FilesystemAccess::from_bits(1),
             1,
             1,
         ));
         let second_key = DenialKey::Filesystem(FilesystemDenialKey::new(
             DomainId::new(MIN_LANDLOCK_ID + 2).unwrap(),
+            BlockerType::FS_ACCESS,
             FilesystemAccess::from_bits(1),
             1,
             1,
         ));
         let third_key = DenialKey::Filesystem(FilesystemDenialKey::new(
             DomainId::new(MIN_LANDLOCK_ID + 3).unwrap(),
+            BlockerType::FS_ACCESS,
             FilesystemAccess::from_bits(1),
             1,
             1,
