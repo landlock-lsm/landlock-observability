@@ -8,10 +8,12 @@ and optionally aggregate repeated denials.
 
 ## Supported Linux versions
 
-Live collection currently supports upstream Linux v7.3-rc1, the CI baseline,
-and later kernels with all required Landlock tracepoints and BPF/BTF features.
-Earlier upstream kernels and partial backports are unsupported. Older vendor
-kernels with a complete backport may work but are not tested in CI.
+Live collection requires the corrected Landlock tracepoint contract planned
+for upstream Linux v7.3-rc5 and later kernels with all required Landlock
+tracepoints and BPF/BTF features.  Earlier upstream kernels, including the
+v7.3-rc1 preview contract, and partial backports are unsupported.  Older vendor
+kernels with a complete corrected-contract backport may work but are not tested
+in CI.
 
 > **Pre-release warning:** Until Linux v7.3 is released, its new Landlock
 > tracepoint interface may still change. Later release candidates may therefore
@@ -122,9 +124,9 @@ programs.  Dynamically linked builds require the target userspace to provide
 libelf and zlib (normally `libelf.so.1` and `libz.so.1`).
 
 The target kernel must provide Landlock tracing-interface generation 1, the
-complete set of twelve BTF tracepoints and callback types introduced in Linux
-v7.3-rc1 and listed below.  It also needs Landlock, the BPF syscall, BPF tracing
-events, BPF ring buffers, and usable vmlinux BTF, conventionally exposed at
+complete set of twelve BTF tracepoints and corrected callback types planned for
+Linux v7.3-rc5 and listed below.  It also needs Landlock, the BPF syscall, BPF
+tracing events, BPF ring buffers, and usable vmlinux BTF, conventionally exposed at
 `/sys/kernel/btf/vmlinux`.  Relevant kernel options include
 `CONFIG_SECURITY_LANDLOCK`, `CONFIG_BPF`, `CONFIG_BPF_SYSCALL`,
 `CONFIG_PERF_EVENTS`, `CONFIG_BPF_EVENTS`, `CONFIG_TRACING`, and
@@ -300,8 +302,8 @@ events.  The collector treats them as one compatibility unit: preparation
 succeeds only after all of them are loaded and attached:
 
 1. `landlock_create_ruleset`
-2. `landlock_add_rule_fs`
-3. `landlock_add_rule_net`
+2. `landlock_add_rule_path_beneath`
+3. `landlock_add_rule_net_port`
 4. `landlock_create_domain`
 5. `landlock_enforce_domain`
 6. `landlock_deny_access_fs`
@@ -313,6 +315,13 @@ succeeds only after all of them are loaded and attached:
 12. `landlock_free_ruleset`
 
 The high-volume `landlock_check_rule` family is intentionally not collected.
+Generation 1 uses the corrected callback signatures, but the current typed API
+still exposes only the earlier semantic field set.  It does not yet expose
+add-rule flags, denial request types, complete checked network addresses,
+ptrace tracers, or signal numbers.  Network denials temporarily project the
+single authoritative checked port into the existing source or destination
+accessors for recognized bind and connect/send rights; zero also represents an
+address without a port.
 
 ## Licensing and distribution
 

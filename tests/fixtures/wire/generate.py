@@ -57,24 +57,24 @@ def encoded_fixtures(byte_order: str, suffix: str) -> dict[str, bytes]:
     out = {}
 
     data = record(1, 0x1100000000000001, byte_order)
-    u64(data, 16, 0xA100000000000001, byte_order); u32(data, 24, 0x12000001, byte_order)
-    u32(data, 28, 0x80010005, byte_order); u32(data, 32, 0x8000000A, byte_order); u32(data, 36, 0x80000003, byte_order)
+    u64(data, 16, 0xA100000000000001, byte_order); u64(data, 24, 0x1200000112000001, byte_order)
+    u32(data, 32, 0x80010005, byte_order); u32(data, 36, 0x8000000A, byte_order); u32(data, 40, 0x80000003, byte_order)
     out[f"01-ruleset-create-{suffix}.bin"] = bytes(data)
 
     data = record(2, 0x2200000000000002, byte_order)
-    u64(data, 16, 0xA200000000000002, byte_order); u32(data, 24, 0x23000002, byte_order)
-    u32(data, 28, 0x80004006, byte_order); u32(data, 32, 0x34000002, byte_order); u64(data, 40, 0x4500000000000002, byte_order)
+    u64(data, 16, 0xA200000000000002, byte_order); u64(data, 24, 0x2300000223000002, byte_order)
+    u32(data, 32, 0x80004006, byte_order); u32(data, 36, 0x34000002, byte_order); u64(data, 48, 0x4500000000000002, byte_order)
     path = b"/fixture/\xff\x1b" + b"\0" + b"ignored-suffix"
-    fixed(data, 48, 256, path.ljust(256, b"Z"))
+    fixed(data, 56, 256, path.ljust(256, b"Z"))
     out[f"02-fs-rule-add-{suffix}.bin"] = bytes(data)
 
     data = record(3, 0x3300000000000003, byte_order)
-    u64(data, 16, 0xA300000000000003, byte_order); u32(data, 24, 0x34000003, byte_order)
-    u32(data, 28, 0x80000009, byte_order); u64(data, 32, 0x5600000000000003, byte_order)
+    u64(data, 16, 0xA300000000000003, byte_order); u64(data, 24, 0x3400000334000003, byte_order)
+    u32(data, 32, 0x80000009, byte_order); u64(data, 40, 0x5600000000000003, byte_order)
     out[f"03-network-rule-add-{suffix}.bin"] = bytes(data)
 
     data = record(4, 0x4400000000000004, byte_order)
-    u64(data, 16, 0xA400000000000004, byte_order); u32(data, 24, 0x45000004, byte_order)
+    u64(data, 16, 0xA400000000000004, byte_order); u64(data, 24, 0x4500000445000004, byte_order)
     u64(data, 32, 0xD400000000000004, byte_order); u64(data, 40, 0, byte_order)
     u32(data, 48, 0x56000004, byte_order); fixed(data, 52, 16, b"15-byte-command\0")
     out[f"04-domain-create-{suffix}.bin"] = bytes(data)
@@ -111,7 +111,7 @@ def encoded_fixtures(byte_order: str, suffix: str) -> dict[str, bytes]:
     out[f"10-domain-free-{suffix}.bin"] = bytes(data)
 
     data = record(11, 0xBB0000000000000B, byte_order)
-    u64(data, 16, 0xAB0000000000000B, byte_order); u32(data, 24, 0xBC00000B, byte_order)
+    u64(data, 16, 0xAB0000000000000B, byte_order); u64(data, 24, 0xBC00000BBC00000B, byte_order)
     out[f"11-ruleset-free-{suffix}.bin"] = bytes(data)
 
     data = record(12, 0xCC0000000000000C, byte_order)

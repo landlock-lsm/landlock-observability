@@ -374,13 +374,13 @@ fn denial_fields(event: &Event) -> Option<DenialFields> {
     match event {
         Event::DenyAccessFs(event) => Some((
             event.context().hierarchy().domain_id(),
-            filesystem_blockers(event.blockers()),
+            filesystem_blockers(event.blockers_access()),
             escape(event.pathname()),
             None,
         )),
         Event::DenyAccessNet(event) => {
             let (mut has_bind, mut has_connect) = (false, false);
-            for name in event.blockers().known_names() {
+            for name in event.blockers_access().known_names() {
                 has_bind |= name.as_str().starts_with("bind_");
                 has_connect |= name.as_str().starts_with("connect_");
             }
@@ -395,7 +395,7 @@ fn denial_fields(event: &Event) -> Option<DenialFields> {
             };
             Some((
                 event.context().hierarchy().domain_id(),
-                network_blockers(event.blockers()),
+                network_blockers(event.blockers_access()),
                 target,
                 None,
             ))
@@ -516,7 +516,7 @@ mod tests {
             DenyAccessFsEvent::builder()
                 .timestamp(timestamp(seconds))
                 .context(context(0x10, None, seconds))
-                .blockers(FilesystemAccess::from_bits(blockers))
+                .blockers_access(FilesystemAccess::from_bits(blockers))
                 .device(1)
                 .inode(2)
                 .pathname(captured(path))
@@ -678,7 +678,7 @@ mod tests {
                 DenyAccessNetEvent::builder()
                     .timestamp(timestamp(2))
                     .context(context(0x10, None, 2))
-                    .blockers(NetworkAccess::from_bits(2))
+                    .blockers_access(NetworkAccess::from_bits(2))
                     .source_port(0)
                     .destination_port(443)
                     .build(),
@@ -759,7 +759,7 @@ mod tests {
                         .logged(true)
                         .build(),
                 )
-                .blockers(FilesystemAccess::from_bits(4))
+                .blockers_access(FilesystemAccess::from_bits(4))
                 .device(1)
                 .inode(2)
                 .pathname(captured(b"/tmp/file"))
@@ -782,7 +782,7 @@ mod tests {
             DenyAccessNetEvent::builder()
                 .timestamp(timestamp(2))
                 .context(context(0x10, None, 2))
-                .blockers(NetworkAccess::from_bits(0x8000_0001))
+                .blockers_access(NetworkAccess::from_bits(0x8000_0001))
                 .source_port(7)
                 .destination_port(9)
                 .build(),
@@ -820,7 +820,7 @@ mod tests {
             DenyAccessNetEvent::builder()
                 .timestamp(timestamp(1))
                 .context(context(1, None, 1))
-                .blockers(NetworkAccess::from_bits(4))
+                .blockers_access(NetworkAccess::from_bits(4))
                 .source_port(0)
                 .destination_port(99)
                 .build(),
@@ -831,7 +831,7 @@ mod tests {
             DenyAccessNetEvent::builder()
                 .timestamp(timestamp(2))
                 .context(context(1, None, 2))
-                .blockers(NetworkAccess::from_bits(8))
+                .blockers_access(NetworkAccess::from_bits(8))
                 .source_port(99)
                 .destination_port(0)
                 .build(),
@@ -842,7 +842,7 @@ mod tests {
             DenyAccessNetEvent::builder()
                 .timestamp(timestamp(3))
                 .context(context(1, None, 3))
-                .blockers(NetworkAccess::from_bits(0x8000_0000))
+                .blockers_access(NetworkAccess::from_bits(0x8000_0000))
                 .source_port(7)
                 .destination_port(8)
                 .build(),

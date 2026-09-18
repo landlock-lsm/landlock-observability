@@ -36,6 +36,87 @@ static __always_inline void discard_event(void *ev)
 	bpf_ringbuf_discard(ev, 0);
 }
 
+#define AF_UNSPEC 0
+#define AF_INET 2
+#define AF_INET6 10
+
+#define LANDLOCK_ACCESS_NET_BIND_TCP (1ULL << 0)
+#define LANDLOCK_ACCESS_NET_CONNECT_TCP (1ULL << 1)
+#define LANDLOCK_ACCESS_NET_BIND_UDP (1ULL << 2)
+#define LANDLOCK_ACCESS_NET_CONNECT_SEND_UDP (1ULL << 3)
+
+#define LANDLOCK_ACCESS_NET_BIND \
+	(LANDLOCK_ACCESS_NET_BIND_TCP | LANDLOCK_ACCESS_NET_BIND_UDP)
+#define LANDLOCK_ACCESS_NET_CONNECT_SEND \
+	(LANDLOCK_ACCESS_NET_CONNECT_TCP | LANDLOCK_ACCESS_NET_CONNECT_SEND_UDP)
+
+#define SOCKADDR_PORT_END                                         \
+	((int)(__builtin_offsetof(struct sockaddr_in, sin_port) + \
+	       sizeof(((struct sockaddr_in *)0)->sin_port)))
+#define HAS_CHECKED_PORT(addrlen, address_family, socket_family)         \
+	((addrlen) >= SOCKADDR_PORT_END &&                               \
+	 ((address_family) == AF_INET || (address_family) == AF_INET6 || \
+	  ((address_family) == AF_UNSPEC && (socket_family) == AF_INET)))
+#define LEGACY_SOURCE_PORT(access, has_port, port) \
+	((has_port) && ((access) & LANDLOCK_ACCESS_NET_BIND) ? (port) : 0)
+#define LEGACY_DESTINATION_PORT(access, has_port, port)                \
+	((has_port) && ((access) & LANDLOCK_ACCESS_NET_CONNECT_SEND) ? \
+		 (port) :                                              \
+		 0)
+
+_Static_assert(SOCKADDR_PORT_END == 4,
+	       "update checked-port tests for a changed port layout");
+_Static_assert(LEGACY_SOURCE_PORT(LANDLOCK_ACCESS_NET_BIND_TCP, 1, 7) == 7,
+	       "bind access must project to source");
+_Static_assert(LEGACY_DESTINATION_PORT(LANDLOCK_ACCESS_NET_CONNECT_TCP, 1, 7) ==
+		       7,
+	       "connect access must project to destination");
+_Static_assert(LEGACY_DESTINATION_PORT(LANDLOCK_ACCESS_NET_CONNECT_TCP, 1, 0) ==
+		       0,
+	       "checked port zero must remain zero");
+_Static_assert(LEGACY_SOURCE_PORT(LANDLOCK_ACCESS_NET_BIND_TCP, 0, 7) == 0 &&
+		       LEGACY_DESTINATION_PORT(LANDLOCK_ACCESS_NET_CONNECT_TCP,
+					       0, 7) == 0,
+	       "an absent port must project to zero");
+_Static_assert(LEGACY_SOURCE_PORT(1ULL << 63, 1, 7) == 0 &&
+		       LEGACY_DESTINATION_PORT(1ULL << 63, 1, 7) == 0,
+	       "unknown access must not guess a direction");
+_Static_assert(HAS_CHECKED_PORT(4, AF_INET, AF_INET6),
+	       "IPv4 addresses contain a port");
+_Static_assert(HAS_CHECKED_PORT(4, AF_UNSPEC, AF_INET),
+	       "IPv4 AF_UNSPEC addresses contain a port");
+_Static_assert(!HAS_CHECKED_PORT(3, AF_INET, AF_INET),
+	       "short addresses do not contain a port");
+_Static_assert(!HAS_CHECKED_PORT(-1, AF_INET, AF_INET),
+	       "negative lengths do not contain a port");
+_Static_assert(!HAS_CHECKED_PORT(4, AF_UNSPEC, AF_INET6),
+	       "IPv6 AF_UNSPEC addresses do not contain a port");
+
+/*
+ * Preserve the legacy source/destination projection until the semantic API
+ * can represent the checked address directly.  Zero remains ambiguous with
+ * an absent port.
+ */
+static __always_inline void
+project_checked_port(__u32 blockers_access, u16 socket_family,
+		     const struct sockaddr_storage *address, int addrlen,
+		     __u64 *source_port, __u64 *destination_port)
+{
+	const struct sockaddr *sockaddr = (const struct sockaddr *)address;
+	const u16 address_family = BPF_CORE_READ(sockaddr, sa_family);
+	const bool has_port =
+		HAS_CHECKED_PORT(addrlen, address_family, socket_family);
+	__u64 port = 0;
+
+	if (has_port)
+		port = bpf_ntohs(BPF_CORE_READ(
+			(const struct sockaddr_in *)address, sin_port));
+
+	*source_port = LEGACY_SOURCE_PORT(blockers_access, has_port, port);
+	*destination_port =
+		LEGACY_DESTINATION_PORT(blockers_access, has_port, port);
+}
+
 /* Capture the abstract UNIX socket name, excluding its namespace NUL. */
 static __always_inline bool
 capture_abstract_unix_socket_name(char dst[ABSTRACT_UNIX_SOCKET_NAME_MAX_LEN],
@@ -157,24 +238,30 @@ int BPF_PROG(handle_create_ruleset, const struct landlock_ruleset *ruleset)
 	return 0;
 }
 
-SEC("tp_btf/landlock_add_rule_fs")
-int BPF_PROG(handle_add_rule_fs, const struct landlock_ruleset *ruleset,
-	     u32 access_rights, const struct path *path, const char *pathname)
+SEC("tp_btf/landlock_add_rule_path_beneath")
+int BPF_PROG(handle_add_rule_path_beneath,
+	     const struct landlock_ruleset *ruleset, u32 flags,
+	     u64 access_rights, const struct path *path, const char *pathname)
 {
 	struct landlock_observability_event *ev = alloc_event();
 
+	(void)flags;
 	if (!ev)
 		return 0;
 
 	ev->timestamp_ns = bpf_ktime_get_ns();
-	ev->type = EVENT_ADD_RULE_FS;
-	ev->add_rule_fs.ruleset_id = BPF_CORE_READ(ruleset, id);
-	ev->add_rule_fs.ruleset_version = BPF_CORE_READ(ruleset, version);
-	ev->add_rule_fs.access_rights = access_rights;
-	ev->add_rule_fs.dev = BPF_CORE_READ(path, dentry, d_sb, s_dev);
-	ev->add_rule_fs.ino = BPF_CORE_READ(path, dentry, d_inode, i_ino);
-	if (!capture_path(ev->add_rule_fs.pathname,
-			  &ev->add_rule_fs.pathname_bytes_omitted, pathname)) {
+	ev->type = EVENT_ADD_RULE_PATH_BENEATH;
+	ev->add_rule_path_beneath.ruleset_id = BPF_CORE_READ(ruleset, id);
+	ev->add_rule_path_beneath.ruleset_version =
+		BPF_CORE_READ(ruleset, version);
+	ev->add_rule_path_beneath.access_rights = access_rights;
+	ev->add_rule_path_beneath.dev =
+		BPF_CORE_READ(path, dentry, d_sb, s_dev);
+	ev->add_rule_path_beneath.ino =
+		BPF_CORE_READ(path, dentry, d_inode, i_ino);
+	if (!capture_path(ev->add_rule_path_beneath.pathname,
+			  &ev->add_rule_path_beneath.pathname_bytes_omitted,
+			  pathname)) {
 		bpf_ringbuf_discard(ev, 0);
 		return 0;
 	}
@@ -183,21 +270,22 @@ int BPF_PROG(handle_add_rule_fs, const struct landlock_ruleset *ruleset,
 	return 0;
 }
 
-SEC("tp_btf/landlock_add_rule_net")
-int BPF_PROG(handle_add_rule_net, const struct landlock_ruleset *ruleset,
-	     u32 access_rights, u64 port)
+SEC("tp_btf/landlock_add_rule_net_port")
+int BPF_PROG(handle_add_rule_net_port, const struct landlock_ruleset *ruleset,
+	     u32 flags, u64 access_rights, u64 port)
 {
 	struct landlock_observability_event *ev = alloc_event();
 
+	(void)flags;
 	if (!ev)
 		return 0;
 
 	ev->timestamp_ns = bpf_ktime_get_ns();
-	ev->type = EVENT_ADD_RULE_NET;
-	ev->add_rule_net.ruleset_id = BPF_CORE_READ(ruleset, id);
-	ev->add_rule_net.ruleset_version = BPF_CORE_READ(ruleset, version);
-	ev->add_rule_net.access_rights = access_rights;
-	ev->add_rule_net.port = port;
+	ev->type = EVENT_ADD_RULE_NET_PORT;
+	ev->add_rule_net_port.ruleset_id = BPF_CORE_READ(ruleset, id);
+	ev->add_rule_net_port.ruleset_version = BPF_CORE_READ(ruleset, version);
+	ev->add_rule_net_port.access_rights = access_rights;
+	ev->add_rule_net_port.port = port;
 
 	submit_event(ev);
 	return 0;
@@ -252,9 +340,11 @@ int BPF_PROG(handle_enforce_domain, const struct landlock_domain *domain,
 
 SEC("tp_btf/landlock_deny_access_fs")
 int BPF_PROG(handle_deny_access_fs, const struct landlock_hierarchy *hierarchy,
-	     bool same_exec, bool logged, u32 blockers, const struct path *path,
+	     bool same_exec, bool logged,
+	     const struct landlock_blockers *blockers, const struct path *path,
 	     const char *pathname)
 {
+	const struct inode *inode;
 	struct landlock_observability_event *ev = alloc_event();
 
 	if (!ev)
@@ -267,11 +357,12 @@ int BPF_PROG(handle_deny_access_fs, const struct landlock_hierarchy *hierarchy,
 			 &ev->deny_access_fs.creator_tgid,
 			 ev->deny_access_fs.creator_comm,
 			 &ev->deny_access_fs.num_denials, hierarchy);
-	ev->deny_access_fs.blockers = blockers;
+	ev->deny_access_fs.blockers_access = BPF_CORE_READ(blockers, access);
 	ev->deny_access_fs.same_exec = same_exec;
 	ev->deny_access_fs.logged = logged;
 	ev->deny_access_fs.dev = BPF_CORE_READ(path, dentry, d_sb, s_dev);
-	ev->deny_access_fs.ino = BPF_CORE_READ(path, dentry, d_inode, i_ino);
+	inode = BPF_CORE_READ(path, dentry, d_inode);
+	ev->deny_access_fs.ino = inode ? BPF_CORE_READ(inode, i_ino) : 0;
 	if (!capture_path(ev->deny_access_fs.pathname,
 			  &ev->deny_access_fs.pathname_bytes_omitted,
 			  pathname)) {
@@ -285,9 +376,12 @@ int BPF_PROG(handle_deny_access_fs, const struct landlock_hierarchy *hierarchy,
 
 SEC("tp_btf/landlock_deny_access_net")
 int BPF_PROG(handle_deny_access_net, const struct landlock_hierarchy *hierarchy,
-	     bool same_exec, bool logged, u32 blockers, const struct sock *sk,
-	     __u64 sport, __u64 dport)
+	     bool same_exec, bool logged,
+	     const struct landlock_blockers *blockers, const struct sock *sk,
+	     u16 socket_family, const struct sockaddr_storage *address,
+	     int addrlen)
 {
+	const __u32 blockers_access = BPF_CORE_READ(blockers, access);
 	struct landlock_observability_event *ev = alloc_event();
 
 	(void)sk;
@@ -301,11 +395,12 @@ int BPF_PROG(handle_deny_access_net, const struct landlock_hierarchy *hierarchy,
 			 &ev->deny_access_net.creator_tgid,
 			 ev->deny_access_net.creator_comm,
 			 &ev->deny_access_net.num_denials, hierarchy);
-	ev->deny_access_net.blockers = blockers;
+	ev->deny_access_net.blockers_access = blockers_access;
 	ev->deny_access_net.same_exec = same_exec;
 	ev->deny_access_net.logged = logged;
-	ev->deny_access_net.sport = sport;
-	ev->deny_access_net.dport = dport;
+	project_checked_port(blockers_access, socket_family, address, addrlen,
+			     &ev->deny_access_net.sport,
+			     &ev->deny_access_net.dport);
 
 	submit_event(ev);
 	return 0;
@@ -314,10 +409,11 @@ int BPF_PROG(handle_deny_access_net, const struct landlock_hierarchy *hierarchy,
 SEC("tp_btf/landlock_deny_ptrace")
 int BPF_PROG(handle_deny_ptrace, const struct landlock_hierarchy *hierarchy,
 	     bool same_exec, bool logged, u64 tracee_domain_id,
-	     const struct task_struct *tracee)
+	     const struct task_struct *tracee, const struct task_struct *tracer)
 {
 	struct landlock_observability_event *ev = alloc_event();
 
+	(void)tracer;
 	if (!ev)
 		return 0;
 
@@ -328,7 +424,7 @@ int BPF_PROG(handle_deny_ptrace, const struct landlock_hierarchy *hierarchy,
 			 ev->deny_ptrace.creator_comm,
 			 &ev->deny_ptrace.num_denials, hierarchy);
 	/* No blockers field: the event name identifies the denial type. */
-	ev->deny_ptrace.blockers = 0;
+	ev->deny_ptrace.blockers_access = 0;
 	ev->deny_ptrace.same_exec = same_exec;
 	ev->deny_ptrace.logged = logged;
 	ev->deny_ptrace.tracee_domain_id = tracee_domain_id;
@@ -343,10 +439,11 @@ SEC("tp_btf/landlock_deny_scope_signal")
 int BPF_PROG(handle_deny_scope_signal,
 	     const struct landlock_hierarchy *hierarchy, bool same_exec,
 	     bool logged, u64 target_domain_id,
-	     const struct task_struct *target)
+	     const struct task_struct *target, int signal)
 {
 	struct landlock_observability_event *ev = alloc_event();
 
+	(void)signal;
 	if (!ev)
 		return 0;
 
@@ -357,7 +454,7 @@ int BPF_PROG(handle_deny_scope_signal,
 			 &ev->deny_scope_signal.creator_tgid,
 			 ev->deny_scope_signal.creator_comm,
 			 &ev->deny_scope_signal.num_denials, hierarchy);
-	ev->deny_scope_signal.blockers = 0;
+	ev->deny_scope_signal.blockers_access = 0;
 	ev->deny_scope_signal.same_exec = same_exec;
 	ev->deny_scope_signal.logged = logged;
 	ev->deny_scope_signal.target_domain_id = target_domain_id;
@@ -396,7 +493,7 @@ int BPF_PROG(handle_deny_scope_abstract_unix_socket,
 			 ev->deny_scope_abstract_unix_socket.creator_comm,
 			 &ev->deny_scope_abstract_unix_socket.num_denials,
 			 hierarchy);
-	ev->deny_scope_abstract_unix_socket.blockers = 0;
+	ev->deny_scope_abstract_unix_socket.blockers_access = 0;
 	ev->deny_scope_abstract_unix_socket.same_exec = same_exec;
 	ev->deny_scope_abstract_unix_socket.logged = logged;
 	ev->deny_scope_abstract_unix_socket.peer_domain_id = peer_domain_id;

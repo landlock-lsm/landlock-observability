@@ -963,7 +963,7 @@ mod tests {
             FreeRulesetEvent::builder()
                 .timestamp(KernelTimestamp::from_nanoseconds(id_offset))
                 .ruleset_id(RulesetId::new(MIN_LANDLOCK_ID + id_offset).unwrap())
-                .ruleset_version(id_offset as u32)
+                .ruleset_version(id_offset)
                 .build(),
         )
     }

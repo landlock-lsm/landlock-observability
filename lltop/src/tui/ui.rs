@@ -627,8 +627,8 @@ fn lifecycle_style(value: LifecycleState) -> Style {
 
 fn blockers_event(event: &Event) -> String {
     match event {
-        Event::DenyAccessFs(event) => format::filesystem(event.blockers()),
-        Event::DenyAccessNet(event) => format::network(event.blockers()),
+        Event::DenyAccessFs(event) => format::filesystem(event.blockers_access()),
+        Event::DenyAccessNet(event) => format::network(event.blockers_access()),
         Event::DenyPtrace(_) => "ptrace".to_owned(),
         Event::DenyScopeSignal(_) => format::scope(ScopeAccess::from_bits(1 << 1)),
         Event::DenyScopeAbstractUnixSocket(_) => format::scope(ScopeAccess::from_bits(1 << 0)),
@@ -646,7 +646,7 @@ fn target_event(event: &Event) -> String {
         Event::DenyAccessFs(event) => format::escape(event.pathname()),
         Event::DenyAccessNet(event) => {
             let (mut bind, mut connect) = (false, false);
-            for name in event.blockers().known_names() {
+            for name in event.blockers_access().known_names() {
                 bind |= name.as_str().starts_with("bind_");
                 connect |= name.as_str().starts_with("connect_");
             }
@@ -961,12 +961,12 @@ pub(super) fn clicked_tab(area: Rect, column: u16, row: u16) -> Option<Tab> {
 mod tests {
     use super::*;
     use landlock_observability::event::{
-        AddRuleFsEvent, AddRuleNetEvent, CapturedAbstractUnixSocketName, CapturedCommand,
-        CapturedPath, CreateDomainEvent, CreateRulesetEvent, Denial, DenialContext,
-        DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent, DenyScopeAbstractUnixSocketEvent,
-        DenyScopeSignalEvent, DomainMembership, EnforceDomainEvent, FilesystemAccess,
-        FreeDomainEvent, HierarchySnapshot, KernelTimestamp, NetworkAccess, ProcessId, ScopeAccess,
-        ThreadId, MIN_LANDLOCK_ID,
+        AddRuleNetPortEvent, AddRulePathBeneathEvent, CapturedAbstractUnixSocketName,
+        CapturedCommand, CapturedPath, CreateDomainEvent, CreateRulesetEvent, Denial,
+        DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
+        DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, DomainMembership,
+        EnforceDomainEvent, FilesystemAccess, FreeDomainEvent, HierarchySnapshot, KernelTimestamp,
+        NetworkAccess, ProcessId, ScopeAccess, ThreadId, MIN_LANDLOCK_ID,
     };
     use ratatui::{backend::TestBackend, Terminal};
 
@@ -997,7 +997,7 @@ mod tests {
                         .logged(count & 1 == 0)
                         .build(),
                 )
-                .blockers(FilesystemAccess::from_bits(4))
+                .blockers_access(FilesystemAccess::from_bits(4))
                 .device(1)
                 .inode(inode)
                 .pathname(CapturedPath::new(format!("/p/{inode}").into_bytes(), false).unwrap())
@@ -1290,7 +1290,7 @@ mod tests {
                             .logged(false)
                             .build(),
                     )
-                    .blockers(NetworkAccess::from_bits(1 << 1))
+                    .blockers_access(NetworkAccess::from_bits(1 << 1))
                     .source_port(0)
                     .destination_port(443)
                     .build(),
@@ -1341,8 +1341,8 @@ mod tests {
                     .scoped(ScopeAccess::from_bits(1 << 1))
                     .build(),
             ),
-            Event::AddRuleFs(
-                AddRuleFsEvent::builder()
+            Event::AddRulePathBeneath(
+                AddRulePathBeneathEvent::builder()
                     .timestamp(KernelTimestamp::from_nanoseconds(2))
                     .ruleset_id(id)
                     .ruleset_version(1)
@@ -1352,8 +1352,8 @@ mod tests {
                     .pathname(CapturedPath::new(b"/tmp/file".to_vec(), false).unwrap())
                     .build(),
             ),
-            Event::AddRuleNet(
-                AddRuleNetEvent::builder()
+            Event::AddRuleNetPort(
+                AddRuleNetPortEvent::builder()
                     .timestamp(KernelTimestamp::from_nanoseconds(3))
                     .ruleset_id(id)
                     .ruleset_version(2)
