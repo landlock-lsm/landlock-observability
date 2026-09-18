@@ -66,7 +66,7 @@ struct landlock_domain {
 } __attribute__((preserve_access_index));
 
 struct landlock_blockers {
-	u32 access;
+	u64 access;
 } __attribute__((preserve_access_index));
 
 /*

@@ -1,6 +1,6 @@
 # Wire decoder fixtures
 
-These files represent twelve logical 344-byte records that exercise every
+These files represent twelve logical 352-byte records that exercise every
 private event-decoder variant. Each logical record is committed twice: the
 `-little-endian.bin` file contains the native scalar representation of a
 little-endian producer, and the `-big-endian.bin` file contains the equivalent
@@ -13,7 +13,7 @@ Their absolute offsets correspond to the private producer layout in
 field, padding region, payload size, and the complete record size.
 
 `generate.py` is a maintenance-only independent semantic oracle. It uses one
-set of literal values and absolute offsets to generate both byte orders with
-Python's standard packing support; it neither imports nor parses the Rust
-decoder. Regenerate all 24 files with `./generate.py`, or validate their exact
+set of literal values and absolute offsets, including access-mask bit 63, to
+generate both byte orders with Python's standard packing support; it neither
+imports nor parses the Rust decoder. Regenerate all 24 files with `./generate.py`, or validate their exact
 names and contents with `./generate.py --check`. Cargo does not run this script.

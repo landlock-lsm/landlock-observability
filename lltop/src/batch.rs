@@ -332,7 +332,7 @@ fn network_blockers(access: NetworkAccess) -> String {
 fn access_blockers<'a>(
     prefix: &str,
     names: impl Iterator<Item = &'a str>,
-    unknown_bits: u32,
+    unknown_bits: u64,
 ) -> String {
     let mut parts = names.map(str::to_owned).collect::<Vec<_>>();
     if unknown_bits != 0 {
@@ -511,7 +511,7 @@ mod tests {
             .build()
     }
 
-    fn fs(seconds: u64, blockers: u32, path: &[u8]) -> Event {
+    fn fs(seconds: u64, blockers: u64, path: &[u8]) -> Event {
         Event::DenyAccessFs(
             DenyAccessFsEvent::builder()
                 .timestamp(timestamp(seconds))
@@ -775,20 +775,20 @@ mod tests {
     #[test]
     fn unknown_access_bits_are_numeric_alongside_semantic_names() {
         let mut batch = Batch::new();
-        let output = batch.process(&fs(1, 0x8000_0004, b"/x"));
-        assert!(output[1].contains("blockers=FS:read_file,0x80000000"));
+        let output = batch.process(&fs(1, 0x8000_0000_0000_0004, b"/x"));
+        assert!(output[1].contains("blockers=FS:read_file,0x8000000000000000"));
 
         let network = Event::DenyAccessNet(
             DenyAccessNetEvent::builder()
                 .timestamp(timestamp(2))
                 .context(context(0x10, None, 2))
-                .blockers_access(NetworkAccess::from_bits(0x8000_0001))
+                .blockers_access(NetworkAccess::from_bits(0x8000_0000_0000_0001))
                 .source_port(7)
                 .destination_port(9)
                 .build(),
         );
         let output = batch.process(&network);
-        assert!(output[0].contains("blockers=Net:bind_tcp,0x80000000"));
+        assert!(output[0].contains("blockers=Net:bind_tcp,0x8000000000000000"));
     }
 
     #[test]
@@ -842,7 +842,7 @@ mod tests {
             DenyAccessNetEvent::builder()
                 .timestamp(timestamp(3))
                 .context(context(1, None, 3))
-                .blockers_access(NetworkAccess::from_bits(0x8000_0000))
+                .blockers_access(NetworkAccess::from_bits(0x8000_0000_0000_0000))
                 .source_port(7)
                 .destination_port(8)
                 .build(),

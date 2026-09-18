@@ -64,7 +64,7 @@ class GenerateAccessNamesTest(unittest.TestCase):
         self.assertIn("FILESYSTEM_ACCESS_NAMES", generated)
         self.assertIn("NETWORK_ACCESS_NAMES", generated)
         self.assertIn("SCOPE_NAMES", generated)
-        self.assertIn('(1_u32 << 1, "connect_tcp")', generated)
+        self.assertIn('(1_u64 << 1, "connect_tcp")', generated)
         self.assertLess(generated.index('"execute"'), generated.index('"read_file"'))
         self.assertLess(generated.index('"bind_tcp"'), generated.index('"connect_tcp"'))
         self.assertLess(
@@ -169,9 +169,24 @@ class GenerateAccessNamesTest(unittest.TestCase):
         self.replace_uapi("(1ULL << 2)", "(3ULL << 2)")
         self.assert_rejected("malformed single-bit expression")
 
-    def test_rejects_bit_outside_u32(self):
-        self.replace_uapi("(1ULL << 2)", "(1ULL << 32)")
-        self.assert_rejected("does not fit in u32: 32")
+    def test_accepts_bit_63(self):
+        self.replace_uapi(
+            "#define LANDLOCK_ACCESS_FS_EXECUTE (1ULL << 0)",
+            "#define LANDLOCK_ACCESS_FS_EXECUTE (1ULL << 0)\n"
+            "#define LANDLOCK_ACCESS_FS_FUTURE (1ULL << 63)",
+        )
+        self.replace_internal(
+            '_LANDLOCK_NAME_ENTRY(LANDLOCK_ACCESS_FS_EXECUTE, "execute")',
+            '_LANDLOCK_NAME_ENTRY(LANDLOCK_ACCESS_FS_EXECUTE, "execute"), \\\n'
+            '\t_LANDLOCK_NAME_ENTRY(LANDLOCK_ACCESS_FS_FUTURE, "future")',
+        )
+        result = self.run_generator()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('(1_u64 << 63, "future")', self.output.read_text(encoding="utf-8"))
+
+    def test_rejects_bit_outside_u64(self):
+        self.replace_uapi("(1ULL << 2)", "(1ULL << 64)")
+        self.assert_rejected("does not fit in u64: 64")
 
     def test_rejects_unrecognized_landlock_access_category(self):
         self.replace_uapi(

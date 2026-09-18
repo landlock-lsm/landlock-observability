@@ -13,7 +13,7 @@ use crate::event::{
     ScopeAccess, ThreadId,
 };
 
-const RECORD_SIZE: usize = 344;
+const RECORD_SIZE: usize = 352;
 const TIMESTAMP_OFFSET: usize = 0;
 const TYPE_OFFSET: usize = 8;
 const UNION_OFFSET: usize = 16;
@@ -281,8 +281,8 @@ fn denial_context(data: &[u8]) -> Result<DenialContext, DecodeError> {
                 .build(),
         )
         .cumulative_denial_count(u64_at(data, 56, "cumulative_denial_count")?)
-        .same_exec(boolean_at(data, 68, "same_exec")?)
-        .logged(boolean_at(data, 69, "logged")?)
+        .same_exec(boolean_at(data, 72, "same_exec")?)
+        .logged(boolean_at(data, 73, "logged")?)
         .build())
 }
 
@@ -306,9 +306,9 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
                 .timestamp(timestamp)
                 .ruleset_id(id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?)
                 .ruleset_version(u64_at(data, 24, "ruleset_version")?)
-                .handled_fs(FilesystemAccess::from_bits(u32_at(data, 32, "handled_fs")?))
-                .handled_net(NetworkAccess::from_bits(u32_at(data, 36, "handled_net")?))
-                .scoped(ScopeAccess::from_bits(u32_at(data, 40, "scoped")?))
+                .handled_fs(FilesystemAccess::from_bits(u64_at(data, 32, "handled_fs")?))
+                .handled_net(NetworkAccess::from_bits(u64_at(data, 40, "handled_net")?))
+                .scoped(ScopeAccess::from_bits(u64_at(data, 48, "scoped")?))
                 .build(),
         ),
         ADD_RULE_PATH_BENEATH => Event::AddRulePathBeneath(
@@ -316,18 +316,18 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
                 .timestamp(timestamp)
                 .ruleset_id(id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?)
                 .ruleset_version(u64_at(data, 24, "ruleset_version")?)
-                .access_rights(FilesystemAccess::from_bits(u32_at(
+                .access_rights(FilesystemAccess::from_bits(u64_at(
                     data,
                     32,
                     "access_rights",
                 )?))
-                .device(u32_at(data, 36, "device")?)
+                .device(u32_at(data, 40, "device")?)
                 .inode(u64_at(data, 48, "inode")?)
                 .pathname(captured_at(
                     data,
                     56,
                     PATH_SIZE,
-                    40,
+                    44,
                     "pathname",
                     "pathname_bytes_omitted",
                 )?)
@@ -338,7 +338,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
                 .timestamp(timestamp)
                 .ruleset_id(id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?)
                 .ruleset_version(u64_at(data, 24, "ruleset_version")?)
-                .access_rights(NetworkAccess::from_bits(u32_at(data, 32, "access_rights")?))
+                .access_rights(NetworkAccess::from_bits(u64_at(data, 32, "access_rights")?))
                 .port(u64_at(data, 40, "port")?)
                 .build(),
         ),
@@ -360,18 +360,18 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
             DenyAccessFsEvent::builder()
                 .timestamp(timestamp)
                 .context(denial_context(data)?)
-                .blockers_access(FilesystemAccess::from_bits(u32_at(
+                .blockers_access(FilesystemAccess::from_bits(u64_at(
                     data,
                     64,
                     "blockers_access",
                 )?))
-                .device(u32_at(data, 72, "device")?)
-                .inode(u64_at(data, 80, "inode")?)
+                .device(u32_at(data, 80, "device")?)
+                .inode(u64_at(data, 88, "inode")?)
                 .pathname(captured_at(
                     data,
-                    88,
+                    96,
                     PATH_SIZE,
-                    76,
+                    84,
                     "pathname",
                     "pathname_bytes_omitted",
                 )?)
@@ -381,13 +381,13 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
             DenyAccessNetEvent::builder()
                 .timestamp(timestamp)
                 .context(denial_context(data)?)
-                .blockers_access(NetworkAccess::from_bits(u32_at(
+                .blockers_access(NetworkAccess::from_bits(u64_at(
                     data,
                     64,
                     "blockers_access",
                 )?))
-                .source_port(u64_at(data, 72, "source_port")?)
-                .destination_port(u64_at(data, 80, "destination_port")?)
+                .source_port(u64_at(data, 80, "source_port")?)
+                .destination_port(u64_at(data, 88, "destination_port")?)
                 .build(),
         ),
         DENY_PTRACE => Event::DenyPtrace(
@@ -395,11 +395,11 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
                 .timestamp(timestamp)
                 .context(denial_context(data)?)
                 .tracee_domain(domain_membership(
-                    u64_at(data, 72, "tracee_domain")?,
+                    u64_at(data, 80, "tracee_domain")?,
                     "tracee_domain",
                 )?)
-                .tracee_pid(process_id(u32_at(data, 80, "tracee_pid")?, "tracee_pid")?)
-                .tracee_comm(command_at(data, 84, "tracee_comm")?)
+                .tracee_pid(process_id(u32_at(data, 88, "tracee_pid")?, "tracee_pid")?)
+                .tracee_comm(command_at(data, 92, "tracee_comm")?)
                 .build(),
         ),
         DENY_SCOPE_SIGNAL => Event::DenyScopeSignal(
@@ -407,11 +407,11 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
                 .timestamp(timestamp)
                 .context(denial_context(data)?)
                 .target_domain(domain_membership(
-                    u64_at(data, 72, "target_domain")?,
+                    u64_at(data, 80, "target_domain")?,
                     "target_domain",
                 )?)
-                .target_pid(process_id(u32_at(data, 80, "target_pid")?, "target_pid")?)
-                .target_comm(command_at(data, 84, "target_comm")?)
+                .target_pid(process_id(u32_at(data, 88, "target_pid")?, "target_pid")?)
+                .target_comm(command_at(data, 92, "target_comm")?)
                 .build(),
         ),
         DENY_SCOPE_ABSTRACT_UNIX_SOCKET => Event::DenyScopeAbstractUnixSocket(
@@ -419,11 +419,11 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
                 .timestamp(timestamp)
                 .context(denial_context(data)?)
                 .peer_domain(domain_membership(
-                    u64_at(data, 72, "peer_domain")?,
+                    u64_at(data, 80, "peer_domain")?,
                     "peer_domain",
                 )?)
-                .peer_pid(optional_process_id(u32_at(data, 80, "peer_pid")?))
-                .abstract_name(abstract_unix_socket_name_at(data, 84, 88)?)
+                .peer_pid(optional_process_id(u32_at(data, 88, "peer_pid")?))
+                .abstract_name(abstract_unix_socket_name_at(data, 92, 96)?)
                 .build(),
         ),
         FREE_DOMAIN => Event::FreeDomain(
@@ -590,9 +590,9 @@ mod tests {
                     .timestamp(KernelTimestamp::from_nanoseconds(0x1100000000000001))
                     .ruleset_id(RulesetId::new(0xA100000000000001).unwrap())
                     .ruleset_version(0x1200000112000001)
-                    .handled_fs(FilesystemAccess::from_bits(0x80010005))
-                    .handled_net(NetworkAccess::from_bits(0x8000000A))
-                    .scoped(ScopeAccess::from_bits(0x80000003))
+                    .handled_fs(FilesystemAccess::from_bits(0x8000000080010005))
+                    .handled_net(NetworkAccess::from_bits(0x800000008000000A))
+                    .scoped(ScopeAccess::from_bits(0x8000000080000003))
                     .build(),
             ),
             Event::AddRulePathBeneath(
@@ -600,7 +600,7 @@ mod tests {
                     .timestamp(KernelTimestamp::from_nanoseconds(0x2200000000000002))
                     .ruleset_id(RulesetId::new(0xA200000000000002).unwrap())
                     .ruleset_version(0x2300000223000002)
-                    .access_rights(FilesystemAccess::from_bits(0x80004006))
+                    .access_rights(FilesystemAccess::from_bits(0x8000000080004006))
                     .device(0x34000002)
                     .inode(0x4500000000000002)
                     .pathname(captured(b"/fixture/\xff\x1b", false))
@@ -611,7 +611,7 @@ mod tests {
                     .timestamp(KernelTimestamp::from_nanoseconds(0x3300000000000003))
                     .ruleset_id(RulesetId::new(0xA300000000000003).unwrap())
                     .ruleset_version(0x3400000334000003)
-                    .access_rights(NetworkAccess::from_bits(0x80000009))
+                    .access_rights(NetworkAccess::from_bits(0x8000000080000009))
                     .port(0x5600000000000003)
                     .build(),
             ),
@@ -638,7 +638,7 @@ mod tests {
                         true,
                         false,
                     ))
-                    .blockers_access(FilesystemAccess::from_bits(0x80010005))
+                    .blockers_access(FilesystemAccess::from_bits(0x8000000080010005))
                     .device(0x72000005)
                     .inode(0x8300000000000005)
                     .pathname(captured(vec![b'P'; 256], true))
@@ -656,7 +656,7 @@ mod tests {
                         false,
                         true,
                     ))
-                    .blockers_access(NetworkAccess::from_bits(0x80010006))
+                    .blockers_access(NetworkAccess::from_bits(0x8000000080010006))
                     .source_port(0x7400000000000006)
                     .destination_port(0x8500000000000006)
                     .build(),
@@ -788,9 +788,9 @@ mod tests {
             RulesetId::new(0xA100000000000001).unwrap()
         );
         assert_eq!(value.ruleset_version(), 0x1200000112000001);
-        assert_eq!(value.handled_fs().bits(), 0x80010005);
-        assert_eq!(value.handled_net().bits(), 0x8000000A);
-        assert_eq!(value.scoped().bits(), 0x80000003);
+        assert_eq!(value.handled_fs().bits(), 0x8000000080010005);
+        assert_eq!(value.handled_net().bits(), 0x800000008000000A);
+        assert_eq!(value.scoped().bits(), 0x8000000080000003);
 
         let Event::AddRulePathBeneath(value) = decode(FIXTURES[1]).unwrap() else {
             panic!()
@@ -801,7 +801,7 @@ mod tests {
             RulesetId::new(0xA200000000000002).unwrap()
         );
         assert_eq!(value.ruleset_version(), 0x2300000223000002);
-        assert_eq!(value.access_rights().bits(), 0x80004006);
+        assert_eq!(value.access_rights().bits(), 0x8000000080004006);
         assert_eq!(value.device(), 0x34000002);
         assert_eq!(value.inode(), 0x4500000000000002);
         assert_eq!(value.pathname().as_bytes(), b"/fixture/\xff\x1b");
@@ -815,7 +815,7 @@ mod tests {
             RulesetId::new(0xA300000000000003).unwrap()
         );
         assert_eq!(value.ruleset_version(), 0x3400000334000003);
-        assert_eq!(value.access_rights().bits(), 0x80000009);
+        assert_eq!(value.access_rights().bits(), 0x8000000080000009);
         assert_eq!(value.port(), 0x5600000000000003);
 
         let Event::CreateDomain(value) = decode(FIXTURES[3]).unwrap() else {
@@ -848,7 +848,7 @@ mod tests {
             0xC100000000000005,
             (true, false),
         );
-        assert_eq!(value.blockers_access().bits(), 0x80010005);
+        assert_eq!(value.blockers_access().bits(), 0x8000000080010005);
         assert_eq!(value.device(), 0x72000005);
         assert_eq!(value.inode(), 0x8300000000000005);
         assert_eq!(value.pathname().as_bytes(), vec![b'P'; 256]);
@@ -866,7 +866,7 @@ mod tests {
             0xC100000000000006,
             (false, true),
         );
-        assert_eq!(value.blockers_access().bits(), 0x80010006);
+        assert_eq!(value.blockers_access().bits(), 0x8000000080010006);
         assert_eq!(value.source_port(), 0x7400000000000006);
         assert_eq!(value.destination_port(), 0x8500000000000006);
 
@@ -1050,7 +1050,7 @@ mod tests {
         for (fixture, offset, field) in [
             (3, 32, "domain_id"),
             (5, 24, "parent_id"),
-            (7, 72, "target_domain"),
+            (7, 80, "target_domain"),
         ] {
             let mut data = *FIXTURES[fixture];
             data[offset..offset + 8].copy_from_slice(&1_u64.to_ne_bytes());
@@ -1065,7 +1065,7 @@ mod tests {
         assert_eq!(root.parent_id(), None);
 
         let mut unsandboxed = *FIXTURES[7];
-        unsandboxed[72..80].copy_from_slice(&0_u64.to_ne_bytes());
+        unsandboxed[80..88].copy_from_slice(&0_u64.to_ne_bytes());
         let Event::DenyScopeSignal(unsandboxed) = decode(&unsandboxed).unwrap() else {
             panic!()
         };
@@ -1081,8 +1081,8 @@ mod tests {
             (6, 32, "creator_tgid"),
             (7, 32, "creator_tgid"),
             (8, 32, "creator_tgid"),
-            (6, 80, "tracee_pid"),
-            (7, 80, "target_pid"),
+            (6, 88, "tracee_pid"),
+            (7, 88, "target_pid"),
             (11, 24, "enforcing_tid"),
         ] {
             let mut data = *FIXTURES[fixture];
@@ -1098,7 +1098,7 @@ mod tests {
         );
 
         let mut data = *FIXTURES[8];
-        data[80..84].copy_from_slice(&0_u32.to_ne_bytes());
+        data[88..92].copy_from_slice(&0_u32.to_ne_bytes());
         let Event::DenyScopeAbstractUnixSocket(event) = decode(&data).unwrap() else {
             panic!()
         };
@@ -1108,15 +1108,15 @@ mod tests {
     #[test]
     fn abstract_unix_socket_name_length_is_exact_and_bounded() {
         let mut empty = *FIXTURES[8];
-        empty[84..88].copy_from_slice(&0_u32.to_ne_bytes());
+        empty[92..96].copy_from_slice(&0_u32.to_ne_bytes());
         let Event::DenyScopeAbstractUnixSocket(empty) = decode(&empty).unwrap() else {
             panic!()
         };
         assert!(empty.abstract_name().as_bytes().is_empty());
 
         let mut maximum = *FIXTURES[8];
-        maximum[84..88].copy_from_slice(&107_u32.to_ne_bytes());
-        maximum[88..195].copy_from_slice(&[0xa5; 107]);
+        maximum[92..96].copy_from_slice(&107_u32.to_ne_bytes());
+        maximum[96..203].copy_from_slice(&[0xa5; 107]);
         let Event::DenyScopeAbstractUnixSocket(maximum) = decode(&maximum).unwrap() else {
             panic!()
         };
@@ -1124,7 +1124,7 @@ mod tests {
 
         for invalid in [108, u32::MAX] {
             let mut malformed = *FIXTURES[8];
-            malformed[84..88].copy_from_slice(&invalid.to_ne_bytes());
+            malformed[92..96].copy_from_slice(&invalid.to_ne_bytes());
             assert_eq!(
                 decode(&malformed),
                 Err(DecodeError::AbstractUnixSocketNameLength {
@@ -1138,10 +1138,10 @@ mod tests {
     #[test]
     fn rejects_every_invalid_boolean_value() {
         for (fixture, offset, field) in [
-            (4, 68, "same_exec"),
-            (4, 69, "logged"),
-            (1, 40, "pathname_bytes_omitted"),
-            (4, 76, "pathname_bytes_omitted"),
+            (4, 72, "same_exec"),
+            (4, 73, "logged"),
+            (1, 44, "pathname_bytes_omitted"),
+            (4, 84, "pathname_bytes_omitted"),
             (11, 28, "complete"),
             (11, 29, "process_wide"),
             (11, 30, "no_new_privs"),
@@ -1176,7 +1176,7 @@ mod tests {
 
         let mut exact_fit = *FIXTURES[1];
         exact_fit[56..56 + PATH_SIZE].fill(b'E');
-        exact_fit[40] = 0;
+        exact_fit[44] = 0;
         let Event::AddRulePathBeneath(exact_fit) = decode(&exact_fit).unwrap() else {
             panic!()
         };
@@ -1214,7 +1214,7 @@ mod tests {
         let mut pathname = *FIXTURES[1];
         pathname[56..56 + PATH_SIZE].fill(0);
         pathname[56..61].copy_from_slice(b"short");
-        pathname[40] = 1;
+        pathname[44] = 1;
         assert_eq!(
             decode(&pathname),
             Err(DecodeError::CapturedBytes {
