@@ -59,12 +59,12 @@ pub enum DomainParent {
 #[non_exhaustive]
 pub struct RulesetVersion {
     ruleset_id: RulesetId,
-    ruleset_version: u32,
+    ruleset_version: u64,
 }
 
 impl RulesetVersion {
     /// Creates a versioned ruleset reference.
-    pub const fn new(ruleset_id: RulesetId, ruleset_version: u32) -> Self {
+    pub const fn new(ruleset_id: RulesetId, ruleset_version: u64) -> Self {
         Self {
             ruleset_id,
             ruleset_version,
@@ -77,7 +77,7 @@ impl RulesetVersion {
     }
 
     /// Returns the ruleset version.
-    pub const fn ruleset_version(self) -> u32 {
+    pub const fn ruleset_version(self) -> u64 {
         self.ruleset_version
     }
 }
@@ -158,15 +158,15 @@ pub struct RulesetState {
     handled_fs: Option<FilesystemAccess>,
     handled_net: Option<NetworkAccess>,
     scoped: Option<ScopeAccess>,
-    max_observed_version: u32,
-    final_version: Option<u32>,
+    max_observed_version: u64,
+    final_version: Option<u64>,
     free_timestamp: Option<KernelTimestamp>,
     filesystem_rules: HashMap<(u32, u64), FilesystemRuleState>,
     network_rules: HashMap<u64, NetworkRuleState>,
 }
 
 impl RulesetState {
-    fn new(id: RulesetId, lifecycle: LifecycleState, version: u32) -> Self {
+    fn new(id: RulesetId, lifecycle: LifecycleState, version: u64) -> Self {
         Self {
             id,
             lifecycle,
@@ -188,7 +188,7 @@ impl RulesetState {
         }
     }
 
-    fn update_version(&mut self, version: u32) {
+    fn update_version(&mut self, version: u64) {
         self.max_observed_version = self.max_observed_version.max(version);
     }
 
@@ -226,12 +226,12 @@ impl RulesetState {
     ///
     /// Every observation that can materialize a ruleset carries a version.
     /// Final versions reported by free events participate in this maximum.
-    pub const fn max_observed_version(&self) -> u32 {
+    pub const fn max_observed_version(&self) -> u64 {
         self.max_observed_version
     }
 
     /// Returns the greatest final version reported by a free event, if any.
-    pub const fn final_version(&self) -> Option<u32> {
+    pub const fn final_version(&self) -> Option<u64> {
         self.final_version
     }
 
@@ -465,7 +465,7 @@ impl State {
                     state.scoped = Some(event.scoped());
                 }
             }
-            Event::AddRuleFs(event) => {
+            Event::AddRulePathBeneath(event) => {
                 let state = self.rulesets.entry(event.ruleset_id()).or_insert_with(|| {
                     RulesetState::new(
                         event.ruleset_id(),
@@ -502,7 +502,7 @@ impl State {
                     }
                 }
             }
-            Event::AddRuleNet(event) => {
+            Event::AddRuleNetPort(event) => {
                 let state = self.rulesets.entry(event.ruleset_id()).or_insert_with(|| {
                     RulesetState::new(
                         event.ruleset_id(),
@@ -718,8 +718,8 @@ fn update_max<T: Ord + Copy>(current: &mut Option<T>, candidate: T) {
 mod tests {
     use super::*;
     use crate::event::{
-        AddRuleFsEvent, AddRuleNetEvent, CreateDomainEvent, CreateRulesetEvent, DenyAccessFsEvent,
-        DenyAccessNetEvent, DenyPtraceEvent, DenyScopeAbstractUnixSocketEvent,
+        AddRuleNetPortEvent, AddRulePathBeneathEvent, CreateDomainEvent, CreateRulesetEvent,
+        DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent, DenyScopeAbstractUnixSocketEvent,
         DenyScopeSignalEvent, EnforceDomainEvent, FreeDomainEvent, FreeRulesetEvent,
         HierarchySnapshot, MIN_LANDLOCK_ID,
     };
@@ -802,8 +802,8 @@ mod tests {
         assert_eq!(reference.to_string(), "100000007.0");
         assert_eq!(format!("{reference:#020}"), "100000007.0");
         assert_eq!(format!("{reference:*>20}"), "100000007.0");
-        let maximum = RulesetVersion::new(RulesetId::new(u64::MAX).unwrap(), u32::MAX);
-        assert_eq!(maximum.to_string(), "ffffffffffffffff.4294967295");
+        let maximum = RulesetVersion::new(RulesetId::new(u64::MAX).unwrap(), u64::MAX);
+        assert_eq!(maximum.to_string(), "ffffffffffffffff.18446744073709551615");
         assert_eq!(state.ruleset_count(), 1);
         assert_eq!(state.rulesets().count(), 1);
         let default = State::default();
@@ -816,8 +816,8 @@ mod tests {
         let mut state = State::new();
         let id = RulesetId::new(MIN_LANDLOCK_ID + 8).unwrap();
         for event in [
-            Event::AddRuleFs(
-                AddRuleFsEvent::builder()
+            Event::AddRulePathBeneath(
+                AddRulePathBeneathEvent::builder()
                     .timestamp(timestamp(20))
                     .ruleset_id(id)
                     .ruleset_version(5)
@@ -827,8 +827,8 @@ mod tests {
                     .pathname(string(b"new"))
                     .build(),
             ),
-            Event::AddRuleFs(
-                AddRuleFsEvent::builder()
+            Event::AddRulePathBeneath(
+                AddRulePathBeneathEvent::builder()
                     .timestamp(timestamp(10))
                     .ruleset_id(id)
                     .ruleset_version(2)
@@ -838,8 +838,8 @@ mod tests {
                     .pathname(string(b"old"))
                     .build(),
             ),
-            Event::AddRuleFs(
-                AddRuleFsEvent::builder()
+            Event::AddRulePathBeneath(
+                AddRulePathBeneathEvent::builder()
                     .timestamp(timestamp(30))
                     .ruleset_id(id)
                     .ruleset_version(4)
@@ -849,8 +849,8 @@ mod tests {
                     .pathname(string(b"separate"))
                     .build(),
             ),
-            Event::AddRuleNet(
-                AddRuleNetEvent::builder()
+            Event::AddRuleNetPort(
+                AddRuleNetPortEvent::builder()
                     .timestamp(timestamp(40))
                     .ruleset_id(id)
                     .ruleset_version(8)
@@ -858,8 +858,8 @@ mod tests {
                     .port(80)
                     .build(),
             ),
-            Event::AddRuleNet(
-                AddRuleNetEvent::builder()
+            Event::AddRuleNetPort(
+                AddRuleNetPortEvent::builder()
                     .timestamp(timestamp(35))
                     .ruleset_id(id)
                     .ruleset_version(7)
@@ -867,8 +867,8 @@ mod tests {
                     .port(80)
                     .build(),
             ),
-            Event::AddRuleNet(
-                AddRuleNetEvent::builder()
+            Event::AddRuleNetPort(
+                AddRuleNetPortEvent::builder()
                     .timestamp(timestamp(45))
                     .ruleset_id(id)
                     .ruleset_version(6)
@@ -876,8 +876,8 @@ mod tests {
                     .port(81)
                     .build(),
             ),
-            Event::AddRuleNet(
-                AddRuleNetEvent::builder()
+            Event::AddRuleNetPort(
+                AddRuleNetPortEvent::builder()
                     .timestamp(timestamp(50))
                     .ruleset_id(RulesetId::new(MIN_LANDLOCK_ID + 9).unwrap())
                     .ruleset_version(0)
@@ -1102,7 +1102,7 @@ mod tests {
                 DenyAccessFsEvent::builder()
                     .timestamp(timestamp(1))
                     .context(context(hierarchy(9, None, 100, b""), 1))
-                    .blockers(FilesystemAccess::from_bits(1))
+                    .blockers_access(FilesystemAccess::from_bits(1))
                     .device(1)
                     .inode(2)
                     .pathname(string(b"path"))
@@ -1123,7 +1123,7 @@ mod tests {
                 DenyAccessFsEvent::builder()
                     .timestamp(timestamp(1))
                     .context(context(hierarchy(10, Some(20), 110, b""), 7))
-                    .blockers(FilesystemAccess::from_bits(1))
+                    .blockers_access(FilesystemAccess::from_bits(1))
                     .device(1)
                     .inode(2)
                     .pathname(string(b"path"))
@@ -1133,7 +1133,7 @@ mod tests {
                 DenyAccessNetEvent::builder()
                     .timestamp(timestamp(2))
                     .context(context(hierarchy(11, None, 111, b"net"), 8))
-                    .blockers(NetworkAccess::from_bits(1))
+                    .blockers_access(NetworkAccess::from_bits(1))
                     .source_port(10)
                     .destination_port(20)
                     .build(),
@@ -1175,7 +1175,7 @@ mod tests {
                 DenyAccessFsEvent::builder()
                     .timestamp(timestamp(6))
                     .context(context(hierarchy(10, Some(20), 110, b""), 7))
-                    .blockers(FilesystemAccess::from_bits(1))
+                    .blockers_access(FilesystemAccess::from_bits(1))
                     .device(1)
                     .inode(2)
                     .pathname(string(b"path"))
@@ -1223,7 +1223,7 @@ mod tests {
                 DenyAccessFsEvent::builder()
                     .timestamp(timestamp(30))
                     .context(context(hierarchy(30, Some(31), 300, b"inferred"), 50))
-                    .blockers(FilesystemAccess::from_bits(1))
+                    .blockers_access(FilesystemAccess::from_bits(1))
                     .device(1)
                     .inode(2)
                     .pathname(string(b"path"))
@@ -1340,8 +1340,8 @@ mod tests {
         );
         apply(
             &mut state,
-            Event::AddRuleNet(
-                AddRuleNetEvent::builder()
+            Event::AddRuleNetPort(
+                AddRuleNetPortEvent::builder()
                     .timestamp(timestamp(50))
                     .ruleset_id(ruleset_id)
                     .ruleset_version(12)

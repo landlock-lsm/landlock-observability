@@ -11,8 +11,8 @@
 
 enum event_type {
 	EVENT_CREATE_RULESET = 1,
-	EVENT_ADD_RULE_FS,
-	EVENT_ADD_RULE_NET,
+	EVENT_ADD_RULE_PATH_BENEATH,
+	EVENT_ADD_RULE_NET_PORT,
 	EVENT_CREATE_DOMAIN,
 	EVENT_DENY_ACCESS_FS,
 	EVENT_DENY_ACCESS_NET,
@@ -32,31 +32,32 @@ struct landlock_observability_event {
 	union {
 		struct {
 			__u64 ruleset_id;
-			__u32 ruleset_version;
+			__u64 ruleset_version;
 			__u32 handled_fs;
 			__u32 handled_net;
 			__u32 scoped;
+			__u8 _tail_pad[4];
 		} create_ruleset;
 		struct {
 			__u64 ruleset_id;
-			__u32 ruleset_version;
+			__u64 ruleset_version;
 			__u32 access_rights;
 			__u32 dev;
 			__u8 pathname_bytes_omitted;
-			__u8 _ino_pad[3];
+			__u8 _ino_pad[7];
 			__u64 ino;
 			char pathname[PATH_MAX_LEN];
-		} add_rule_fs;
+		} add_rule_path_beneath;
 		struct {
 			__u64 ruleset_id;
-			__u32 ruleset_version;
+			__u64 ruleset_version;
 			__u32 access_rights;
+			__u8 _port_pad[4];
 			__u64 port;
-		} add_rule_net;
+		} add_rule_net_port;
 		struct {
 			__u64 ruleset_id;
-			__u32 ruleset_version;
-			__u8 _domain_pad[4];
+			__u64 ruleset_version;
 			__u64 domain_id;
 			__u64 parent_id;
 			__u32 creator_tgid;
@@ -78,7 +79,7 @@ struct landlock_observability_event {
 			char creator_comm[TASK_COMM_LEN];
 			__u8 _count_pad[4];
 			__u64 num_denials;
-			__u32 blockers;
+			__u32 blockers_access;
 			__u8 same_exec;
 			__u8 logged;
 			__u8 _pad[2];
@@ -95,7 +96,7 @@ struct landlock_observability_event {
 			char creator_comm[TASK_COMM_LEN];
 			__u8 _count_pad[4];
 			__u64 num_denials;
-			__u32 blockers;
+			__u32 blockers_access;
 			__u8 same_exec;
 			__u8 logged;
 			__u8 _pad[2];
@@ -109,7 +110,7 @@ struct landlock_observability_event {
 			char creator_comm[TASK_COMM_LEN];
 			__u8 _count_pad[4];
 			__u64 num_denials;
-			__u32 blockers;
+			__u32 blockers_access;
 			__u8 same_exec;
 			__u8 logged;
 			__u8 _pad[2];
@@ -125,7 +126,7 @@ struct landlock_observability_event {
 			char creator_comm[TASK_COMM_LEN];
 			__u8 _count_pad[4];
 			__u64 num_denials;
-			__u32 blockers;
+			__u32 blockers_access;
 			__u8 same_exec;
 			__u8 logged;
 			__u8 _pad[2];
@@ -141,7 +142,7 @@ struct landlock_observability_event {
 			char creator_comm[TASK_COMM_LEN];
 			__u8 _count_pad[4];
 			__u64 num_denials;
-			__u32 blockers;
+			__u32 blockers_access;
 			__u8 same_exec;
 			__u8 logged;
 			__u8 _pad[2];
@@ -157,8 +158,7 @@ struct landlock_observability_event {
 		} free_domain;
 		struct {
 			__u64 ruleset_id;
-			__u32 ruleset_version;
-			__u8 _tail_pad[4];
+			__u64 ruleset_version;
 		} free_ruleset;
 	};
 };
@@ -173,8 +173,9 @@ struct landlock_observability_event {
 		"unexpected size: " #member)
 
 _Static_assert(EVENT_CREATE_RULESET == 1, "unexpected create-ruleset kind");
-_Static_assert(EVENT_ADD_RULE_FS == 2, "unexpected add-fs-rule kind");
-_Static_assert(EVENT_ADD_RULE_NET == 3, "unexpected add-network-rule kind");
+_Static_assert(EVENT_ADD_RULE_PATH_BENEATH == 2, "unexpected add-fs-rule kind");
+_Static_assert(EVENT_ADD_RULE_NET_PORT == 3,
+	       "unexpected add-network-rule kind");
 _Static_assert(EVENT_CREATE_DOMAIN == 4, "unexpected create-domain kind");
 _Static_assert(EVENT_DENY_ACCESS_FS == 5, "unexpected filesystem-denial kind");
 _Static_assert(EVENT_DENY_ACCESS_NET == 6, "unexpected network-denial kind");
@@ -204,25 +205,26 @@ ASSERT_FIELD(type, 8, 1);
 ASSERT_FIELD(_pad, 9, 3);
 ASSERT_FIELD(_union_pad, 12, 4);
 ASSERT_FIELD(create_ruleset.ruleset_id, 16, 8);
-ASSERT_FIELD(create_ruleset.ruleset_version, 24, 4);
-ASSERT_FIELD(create_ruleset.handled_fs, 28, 4);
-ASSERT_FIELD(create_ruleset.handled_net, 32, 4);
-ASSERT_FIELD(create_ruleset.scoped, 36, 4);
-ASSERT_FIELD(add_rule_fs.ruleset_id, 16, 8);
-ASSERT_FIELD(add_rule_fs.ruleset_version, 24, 4);
-ASSERT_FIELD(add_rule_fs.access_rights, 28, 4);
-ASSERT_FIELD(add_rule_fs.dev, 32, 4);
-ASSERT_FIELD(add_rule_fs.pathname_bytes_omitted, 36, 1);
-ASSERT_FIELD(add_rule_fs._ino_pad, 37, 3);
-ASSERT_FIELD(add_rule_fs.ino, 40, 8);
-ASSERT_FIELD(add_rule_fs.pathname, 48, 256);
-ASSERT_FIELD(add_rule_net.ruleset_id, 16, 8);
-ASSERT_FIELD(add_rule_net.ruleset_version, 24, 4);
-ASSERT_FIELD(add_rule_net.access_rights, 28, 4);
-ASSERT_FIELD(add_rule_net.port, 32, 8);
+ASSERT_FIELD(create_ruleset.ruleset_version, 24, 8);
+ASSERT_FIELD(create_ruleset.handled_fs, 32, 4);
+ASSERT_FIELD(create_ruleset.handled_net, 36, 4);
+ASSERT_FIELD(create_ruleset.scoped, 40, 4);
+ASSERT_FIELD(create_ruleset._tail_pad, 44, 4);
+ASSERT_FIELD(add_rule_path_beneath.ruleset_id, 16, 8);
+ASSERT_FIELD(add_rule_path_beneath.ruleset_version, 24, 8);
+ASSERT_FIELD(add_rule_path_beneath.access_rights, 32, 4);
+ASSERT_FIELD(add_rule_path_beneath.dev, 36, 4);
+ASSERT_FIELD(add_rule_path_beneath.pathname_bytes_omitted, 40, 1);
+ASSERT_FIELD(add_rule_path_beneath._ino_pad, 41, 7);
+ASSERT_FIELD(add_rule_path_beneath.ino, 48, 8);
+ASSERT_FIELD(add_rule_path_beneath.pathname, 56, 256);
+ASSERT_FIELD(add_rule_net_port.ruleset_id, 16, 8);
+ASSERT_FIELD(add_rule_net_port.ruleset_version, 24, 8);
+ASSERT_FIELD(add_rule_net_port.access_rights, 32, 4);
+ASSERT_FIELD(add_rule_net_port._port_pad, 36, 4);
+ASSERT_FIELD(add_rule_net_port.port, 40, 8);
 ASSERT_FIELD(create_domain.ruleset_id, 16, 8);
-ASSERT_FIELD(create_domain.ruleset_version, 24, 4);
-ASSERT_FIELD(create_domain._domain_pad, 28, 4);
+ASSERT_FIELD(create_domain.ruleset_version, 24, 8);
 ASSERT_FIELD(create_domain.domain_id, 32, 8);
 ASSERT_FIELD(create_domain.parent_id, 40, 8);
 ASSERT_FIELD(create_domain.creator_tgid, 48, 4);
@@ -234,16 +236,16 @@ ASSERT_FIELD(enforce_domain.complete, 28, 1);
 ASSERT_FIELD(enforce_domain.process_wide, 29, 1);
 ASSERT_FIELD(enforce_domain.no_new_privs, 30, 1);
 ASSERT_FIELD(enforce_domain._pad, 31, 1);
-#define ASSERT_DENIAL_HEADER(variant)               \
-	ASSERT_FIELD(variant.domain_id, 16, 8);     \
-	ASSERT_FIELD(variant.parent_id, 24, 8);     \
-	ASSERT_FIELD(variant.creator_tgid, 32, 4);  \
-	ASSERT_FIELD(variant.creator_comm, 36, 16); \
-	ASSERT_FIELD(variant._count_pad, 52, 4);    \
-	ASSERT_FIELD(variant.num_denials, 56, 8);   \
-	ASSERT_FIELD(variant.blockers, 64, 4);      \
-	ASSERT_FIELD(variant.same_exec, 68, 1);     \
-	ASSERT_FIELD(variant.logged, 69, 1);        \
+#define ASSERT_DENIAL_HEADER(variant)                 \
+	ASSERT_FIELD(variant.domain_id, 16, 8);       \
+	ASSERT_FIELD(variant.parent_id, 24, 8);       \
+	ASSERT_FIELD(variant.creator_tgid, 32, 4);    \
+	ASSERT_FIELD(variant.creator_comm, 36, 16);   \
+	ASSERT_FIELD(variant._count_pad, 52, 4);      \
+	ASSERT_FIELD(variant.num_denials, 56, 8);     \
+	ASSERT_FIELD(variant.blockers_access, 64, 4); \
+	ASSERT_FIELD(variant.same_exec, 68, 1);       \
+	ASSERT_FIELD(variant.logged, 69, 1);          \
 	ASSERT_FIELD(variant._pad, 70, 2)
 ASSERT_DENIAL_HEADER(deny_access_fs);
 ASSERT_FIELD(deny_access_fs.dev, 72, 4);
@@ -273,11 +275,10 @@ ASSERT_FIELD(deny_scope_abstract_unix_socket._tail_pad, 195, 5);
 ASSERT_FIELD(free_domain.domain_id, 16, 8);
 ASSERT_FIELD(free_domain.denials, 24, 8);
 ASSERT_FIELD(free_ruleset.ruleset_id, 16, 8);
-ASSERT_FIELD(free_ruleset.ruleset_version, 24, 4);
-ASSERT_FIELD(free_ruleset._tail_pad, 28, 4);
-ASSERT_FIELD(create_ruleset, 16, 24);
-ASSERT_FIELD(add_rule_fs, 16, 288);
-ASSERT_FIELD(add_rule_net, 16, 24);
+ASSERT_FIELD(free_ruleset.ruleset_version, 24, 8);
+ASSERT_FIELD(create_ruleset, 16, 32);
+ASSERT_FIELD(add_rule_path_beneath, 16, 296);
+ASSERT_FIELD(add_rule_net_port, 16, 32);
 ASSERT_FIELD(create_domain, 16, 56);
 ASSERT_FIELD(enforce_domain, 16, 16);
 ASSERT_FIELD(deny_access_fs, 16, 328);

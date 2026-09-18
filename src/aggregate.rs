@@ -17,7 +17,7 @@ const DEFAULT_CAPACITY: usize = 1000;
 #[non_exhaustive]
 pub struct FilesystemDenialKey {
     domain_id: DomainId,
-    blockers: FilesystemAccess,
+    blockers_access: FilesystemAccess,
     device: u32,
     inode: u64,
 }
@@ -26,13 +26,13 @@ impl FilesystemDenialKey {
     /// Creates a filesystem denial key.
     pub const fn new(
         domain_id: DomainId,
-        blockers: FilesystemAccess,
+        blockers_access: FilesystemAccess,
         device: u32,
         inode: u64,
     ) -> Self {
         Self {
             domain_id,
-            blockers,
+            blockers_access,
             device,
             inode,
         }
@@ -44,8 +44,8 @@ impl FilesystemDenialKey {
     }
 
     /// Returns the access rights that blocked the operation.
-    pub const fn blockers(&self) -> FilesystemAccess {
-        self.blockers
+    pub const fn blockers_access(&self) -> FilesystemAccess {
+        self.blockers_access
     }
 
     /// Returns the captured filesystem device number.
@@ -64,7 +64,7 @@ impl FilesystemDenialKey {
 #[non_exhaustive]
 pub struct NetworkDenialKey {
     domain_id: DomainId,
-    blockers: NetworkAccess,
+    blockers_access: NetworkAccess,
     source_port: u64,
     destination_port: u64,
 }
@@ -73,13 +73,13 @@ impl NetworkDenialKey {
     /// Creates a network denial key.
     pub const fn new(
         domain_id: DomainId,
-        blockers: NetworkAccess,
+        blockers_access: NetworkAccess,
         source_port: u64,
         destination_port: u64,
     ) -> Self {
         Self {
             domain_id,
-            blockers,
+            blockers_access,
             source_port,
             destination_port,
         }
@@ -91,16 +91,16 @@ impl NetworkDenialKey {
     }
 
     /// Returns the access rights that blocked the operation.
-    pub const fn blockers(&self) -> NetworkAccess {
-        self.blockers
+    pub const fn blockers_access(&self) -> NetworkAccess {
+        self.blockers_access
     }
 
-    /// Returns the bind-side source port captured by the tracepoint.
+    /// Returns the checked port projected for a known bind access, or zero otherwise.
     pub const fn source_port(&self) -> u64 {
         self.source_port
     }
 
-    /// Returns the connect or send-side destination port captured by the tracepoint.
+    /// Returns the checked port projected for a known connect or send access, or zero otherwise.
     pub const fn destination_port(&self) -> u64 {
         self.destination_port
     }
@@ -564,7 +564,7 @@ fn denial_facts(event: &Event) -> Option<(DenialKey, bool, bool)> {
         Event::DenyAccessFs(denial) => (
             DenialKey::Filesystem(FilesystemDenialKey::new(
                 denial.context().hierarchy().domain_id(),
-                denial.blockers(),
+                denial.blockers_access(),
                 denial.device(),
                 denial.inode(),
             )),
@@ -573,7 +573,7 @@ fn denial_facts(event: &Event) -> Option<(DenialKey, bool, bool)> {
         Event::DenyAccessNet(denial) => (
             DenialKey::Network(NetworkDenialKey::new(
                 denial.context().hierarchy().domain_id(),
-                denial.blockers(),
+                denial.blockers_access(),
                 denial.source_port(),
                 denial.destination_port(),
             )),
@@ -653,7 +653,7 @@ mod tests {
         timestamp: u64,
         domain_offset: u64,
         cumulative: u64,
-        blockers: u32,
+        blockers_access: u32,
         target: (u32, u64, &[u8]),
         flags: (bool, bool),
     ) -> Event {
@@ -661,7 +661,7 @@ mod tests {
             DenyAccessFsEvent::builder()
                 .timestamp(KernelTimestamp::from_nanoseconds(timestamp))
                 .context(context(domain_offset, cumulative, flags.0, flags.1))
-                .blockers(FilesystemAccess::from_bits(blockers))
+                .blockers_access(FilesystemAccess::from_bits(blockers_access))
                 .device(target.0)
                 .inode(target.1)
                 .pathname(string(target.2))
@@ -669,12 +669,17 @@ mod tests {
         )
     }
 
-    fn network(timestamp: u64, domain_offset: u64, blockers: u32, ports: (u64, u64)) -> Event {
+    fn network(
+        timestamp: u64,
+        domain_offset: u64,
+        blockers_access: u32,
+        ports: (u64, u64),
+    ) -> Event {
         Event::DenyAccessNet(
             DenyAccessNetEvent::builder()
                 .timestamp(KernelTimestamp::from_nanoseconds(timestamp))
                 .context(context(domain_offset, 1, false, true))
-                .blockers(NetworkAccess::from_bits(blockers))
+                .blockers_access(NetworkAccess::from_bits(blockers_access))
                 .source_port(ports.0)
                 .destination_port(ports.1)
                 .build(),
@@ -764,12 +769,12 @@ mod tests {
         let DenialKey::Filesystem(key) = fs_key else {
             panic!("filesystem key changed variant");
         };
-        assert_eq!(key.blockers().bits(), 0x8000_0001);
+        assert_eq!(key.blockers_access().bits(), 0x8000_0001);
         assert_eq!((key.device(), key.inode()), (2, 3));
         let DenialKey::Network(key) = network_key else {
             panic!("network key changed variant");
         };
-        assert_eq!(key.blockers().bits(), 0x8000_0002);
+        assert_eq!(key.blockers_access().bits(), 0x8000_0002);
         assert_eq!((key.source_port(), key.destination_port()), (100, 200));
         let DenialKey::Ptrace(key) = ptrace_key else {
             panic!("ptrace key changed variant");

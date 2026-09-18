@@ -692,7 +692,7 @@ typestate_builder!(
 pub struct CreateRulesetEvent {
     timestamp: KernelTimestamp,
     ruleset_id: RulesetId,
-    ruleset_version: u32,
+    ruleset_version: u64,
     handled_fs: FilesystemAccess,
     handled_net: NetworkAccess,
     scoped: ScopeAccess,
@@ -701,7 +701,7 @@ typestate_builder!(
     CreateRulesetEvent, CreateRulesetEventBuilder, "A typestate builder for [`CreateRulesetEvent`].";
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     ruleset_id: RulesetIdState => RulesetId, "Sets the kernel-assigned ruleset identity.";
-    ruleset_version: RulesetVersion => u32, "Sets the captured ruleset version.";
+    ruleset_version: RulesetVersion => u64, "Sets the captured ruleset version.";
     handled_fs: HandledFs => FilesystemAccess, "Sets the handled filesystem access rights.";
     handled_net: HandledNet => NetworkAccess, "Sets the handled network access rights.";
     scoped: Scoped => ScopeAccess, "Sets the scoped access rights.";
@@ -712,7 +712,7 @@ impl CreateRulesetEvent {
         self.ruleset_id
     }
     /// Returns the ruleset version captured for this event.
-    pub const fn ruleset_version(&self) -> u32 {
+    pub const fn ruleset_version(&self) -> u64 {
         self.ruleset_version
     }
     /// Returns the filesystem access rights handled by the ruleset.
@@ -738,32 +738,32 @@ impl Observation for CreateRulesetEvent {
 /// A filesystem rule addition event.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-pub struct AddRuleFsEvent {
+pub struct AddRulePathBeneathEvent {
     timestamp: KernelTimestamp,
     ruleset_id: RulesetId,
-    ruleset_version: u32,
+    ruleset_version: u64,
     access_rights: FilesystemAccess,
     device: u32,
     inode: u64,
     pathname: CapturedPath,
 }
 typestate_builder!(
-    AddRuleFsEvent, AddRuleFsEventBuilder, "A typestate builder for [`AddRuleFsEvent`].";
+    AddRulePathBeneathEvent, AddRulePathBeneathEventBuilder, "A typestate builder for [`AddRulePathBeneathEvent`].";
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     ruleset_id: RulesetIdState => RulesetId, "Sets the kernel-assigned ruleset identity.";
-    ruleset_version: RulesetVersion => u32, "Sets the captured ruleset version.";
+    ruleset_version: RulesetVersion => u64, "Sets the captured ruleset version.";
     access_rights: AccessRights => FilesystemAccess, "Sets the filesystem access rights allowed by the rule.";
     device: Device => u32, "Sets the captured filesystem device number.";
     inode: Inode => u64, "Sets the captured filesystem inode number.";
     pathname: Pathname => CapturedPath, "Sets the captured filesystem pathname.";
 );
-impl AddRuleFsEvent {
+impl AddRulePathBeneathEvent {
     /// Returns the kernel-assigned ruleset identity.
     pub const fn ruleset_id(&self) -> RulesetId {
         self.ruleset_id
     }
     /// Returns the ruleset version captured for this event.
-    pub const fn ruleset_version(&self) -> u32 {
+    pub const fn ruleset_version(&self) -> u64 {
         self.ruleset_version
     }
     /// Returns the access rights allowed by the added rule.
@@ -783,8 +783,8 @@ impl AddRuleFsEvent {
         &self.pathname
     }
 }
-impl sealed::Sealed for AddRuleFsEvent {}
-impl Observation for AddRuleFsEvent {
+impl sealed::Sealed for AddRulePathBeneathEvent {}
+impl Observation for AddRulePathBeneathEvent {
     fn timestamp(&self) -> KernelTimestamp {
         self.timestamp
     }
@@ -793,28 +793,28 @@ impl Observation for AddRuleFsEvent {
 /// A network rule addition event.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-pub struct AddRuleNetEvent {
+pub struct AddRuleNetPortEvent {
     timestamp: KernelTimestamp,
     ruleset_id: RulesetId,
-    ruleset_version: u32,
+    ruleset_version: u64,
     access_rights: NetworkAccess,
     port: u64,
 }
 typestate_builder!(
-    AddRuleNetEvent, AddRuleNetEventBuilder, "A typestate builder for [`AddRuleNetEvent`].";
+    AddRuleNetPortEvent, AddRuleNetPortEventBuilder, "A typestate builder for [`AddRuleNetPortEvent`].";
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     ruleset_id: RulesetIdState => RulesetId, "Sets the kernel-assigned ruleset identity.";
-    ruleset_version: RulesetVersion => u32, "Sets the captured ruleset version.";
+    ruleset_version: RulesetVersion => u64, "Sets the captured ruleset version.";
     access_rights: AccessRights => NetworkAccess, "Sets the network access rights allowed by the rule.";
     port: Port => u64, "Sets the captured network-rule port.";
 );
-impl AddRuleNetEvent {
+impl AddRuleNetPortEvent {
     /// Returns the kernel-assigned ruleset identity.
     pub const fn ruleset_id(&self) -> RulesetId {
         self.ruleset_id
     }
     /// Returns the ruleset version captured for this event.
-    pub const fn ruleset_version(&self) -> u32 {
+    pub const fn ruleset_version(&self) -> u64 {
         self.ruleset_version
     }
     /// Returns the access rights allowed by the added rule.
@@ -826,8 +826,8 @@ impl AddRuleNetEvent {
         self.port
     }
 }
-impl sealed::Sealed for AddRuleNetEvent {}
-impl Observation for AddRuleNetEvent {
+impl sealed::Sealed for AddRuleNetPortEvent {}
+impl Observation for AddRuleNetPortEvent {
     fn timestamp(&self) -> KernelTimestamp {
         self.timestamp
     }
@@ -839,7 +839,7 @@ impl Observation for AddRuleNetEvent {
 pub struct CreateDomainEvent {
     timestamp: KernelTimestamp,
     ruleset_id: RulesetId,
-    ruleset_version: u32,
+    ruleset_version: u64,
     domain_id: DomainId,
     parent_id: Option<DomainId>,
     creator_tgid: ProcessId,
@@ -849,7 +849,7 @@ typestate_builder!(
     CreateDomainEvent, CreateDomainEventBuilder, "A typestate builder for [`CreateDomainEvent`].";
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     ruleset_id: RulesetIdState => RulesetId, "Sets the kernel-assigned ruleset identity.";
-    ruleset_version: RulesetVersion => u32, "Sets the ruleset version frozen into the domain.";
+    ruleset_version: RulesetVersion => u64, "Sets the ruleset version frozen into the domain.";
     domain_id: DomainIdState => DomainId, "Sets the kernel-assigned domain identity.";
     parent_id: ParentId => Option<DomainId>, "Sets the parent domain identity, or `None` for no parent.";
     creator_tgid: CreatorTgid => ProcessId, "Sets the process ID of the domain creator.";
@@ -861,7 +861,7 @@ impl CreateDomainEvent {
         self.ruleset_id
     }
     /// Returns the ruleset version frozen into the new domain.
-    pub const fn ruleset_version(&self) -> u32 {
+    pub const fn ruleset_version(&self) -> u64 {
         self.ruleset_version
     }
     /// Returns the kernel-assigned domain identity.
@@ -894,7 +894,7 @@ impl Observation for CreateDomainEvent {
 pub struct DenyAccessFsEvent {
     timestamp: KernelTimestamp,
     context: DenialContext,
-    blockers: FilesystemAccess,
+    blockers_access: FilesystemAccess,
     device: u32,
     inode: u64,
     pathname: CapturedPath,
@@ -903,15 +903,15 @@ typestate_builder!(
     DenyAccessFsEvent, DenyAccessFsEventBuilder, "A typestate builder for [`DenyAccessFsEvent`].";
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     context: Context => DenialContext, "Sets the facts shared by denial events.";
-    blockers: Blockers => FilesystemAccess, "Sets the filesystem access rights that blocked the operation.";
+    blockers_access: Blockers => FilesystemAccess, "Sets the filesystem access rights that blocked the operation.";
     device: Device => u32, "Sets the captured filesystem device number.";
     inode: Inode => u64, "Sets the captured filesystem inode number.";
     pathname: Pathname => CapturedPath, "Sets the captured filesystem pathname.";
 );
 impl DenyAccessFsEvent {
     /// Returns the access rights that blocked the operation.
-    pub const fn blockers(&self) -> FilesystemAccess {
-        self.blockers
+    pub const fn blockers_access(&self) -> FilesystemAccess {
+        self.blockers_access
     }
     /// Returns the captured filesystem device number.
     pub const fn device(&self) -> u32 {
@@ -944,7 +944,7 @@ impl Denial for DenyAccessFsEvent {
 pub struct DenyAccessNetEvent {
     timestamp: KernelTimestamp,
     context: DenialContext,
-    blockers: NetworkAccess,
+    blockers_access: NetworkAccess,
     source_port: u64,
     destination_port: u64,
 }
@@ -952,20 +952,20 @@ typestate_builder!(
     DenyAccessNetEvent, DenyAccessNetEventBuilder, "A typestate builder for [`DenyAccessNetEvent`].";
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     context: Context => DenialContext, "Sets the facts shared by denial events.";
-    blockers: Blockers => NetworkAccess, "Sets the network access rights that blocked the operation.";
-    source_port: SourcePort => u64, "Sets the captured bind-side source port.";
-    destination_port: DestinationPort => u64, "Sets the captured connect or send-side destination port.";
+    blockers_access: Blockers => NetworkAccess, "Sets the network access rights that blocked the operation.";
+    source_port: SourcePort => u64, "Sets the checked port projected for a known bind access, or zero otherwise.";
+    destination_port: DestinationPort => u64, "Sets the checked port projected for a known connect or send access, or zero otherwise.";
 );
 impl DenyAccessNetEvent {
     /// Returns the access rights that blocked the operation.
-    pub const fn blockers(&self) -> NetworkAccess {
-        self.blockers
+    pub const fn blockers_access(&self) -> NetworkAccess {
+        self.blockers_access
     }
-    /// Returns the bind-side source port captured by the tracepoint.
+    /// Returns the checked port for a known bind access, or zero otherwise.
     pub const fn source_port(&self) -> u64 {
         self.source_port
     }
-    /// Returns the connect or send-side destination port captured by the tracepoint.
+    /// Returns the checked port for a known connect or send access, or zero otherwise.
     pub const fn destination_port(&self) -> u64 {
         self.destination_port
     }
@@ -1154,13 +1154,13 @@ impl Observation for FreeDomainEvent {
 pub struct FreeRulesetEvent {
     timestamp: KernelTimestamp,
     ruleset_id: RulesetId,
-    ruleset_version: u32,
+    ruleset_version: u64,
 }
 typestate_builder!(
     FreeRulesetEvent, FreeRulesetEventBuilder, "A typestate builder for [`FreeRulesetEvent`].";
     timestamp: Timestamp => KernelTimestamp, "Sets the monotonic kernel timestamp.";
     ruleset_id: RulesetIdState => RulesetId, "Sets the kernel-assigned ruleset identity.";
-    ruleset_version: RulesetVersion => u32, "Sets the final ruleset version.";
+    ruleset_version: RulesetVersion => u64, "Sets the final ruleset version.";
 );
 impl FreeRulesetEvent {
     /// Returns the kernel-assigned ruleset identity.
@@ -1168,7 +1168,7 @@ impl FreeRulesetEvent {
         self.ruleset_id
     }
     /// Returns the ruleset's final version.
-    pub const fn ruleset_version(&self) -> u32 {
+    pub const fn ruleset_version(&self) -> u64 {
         self.ruleset_version
     }
 }
@@ -1237,9 +1237,9 @@ pub enum Event {
     /// A ruleset was created.
     CreateRuleset(CreateRulesetEvent),
     /// A filesystem rule was added.
-    AddRuleFs(AddRuleFsEvent),
+    AddRulePathBeneath(AddRulePathBeneathEvent),
     /// A network rule was added.
-    AddRuleNet(AddRuleNetEvent),
+    AddRuleNetPort(AddRuleNetPortEvent),
     /// A domain was created.
     CreateDomain(CreateDomainEvent),
     /// Filesystem access was denied.
@@ -1265,8 +1265,8 @@ impl Observation for Event {
     fn timestamp(&self) -> KernelTimestamp {
         match self {
             Self::CreateRuleset(event) => event.timestamp(),
-            Self::AddRuleFs(event) => event.timestamp(),
-            Self::AddRuleNet(event) => event.timestamp(),
+            Self::AddRulePathBeneath(event) => event.timestamp(),
+            Self::AddRuleNetPort(event) => event.timestamp(),
             Self::CreateDomain(event) => event.timestamp(),
             Self::DenyAccessFs(event) => event.timestamp(),
             Self::DenyAccessNet(event) => event.timestamp(),

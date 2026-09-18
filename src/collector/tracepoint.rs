@@ -16,8 +16,8 @@ const VMLINUX_BTF: &str = "/sys/kernel/btf/vmlinux";
 // directly on kernel generation numbers.
 const GENERATION_1_TARGETS: [&[u8]; 12] = [
     b"btf_trace_landlock_create_ruleset",
-    b"btf_trace_landlock_add_rule_fs",
-    b"btf_trace_landlock_add_rule_net",
+    b"btf_trace_landlock_add_rule_path_beneath",
+    b"btf_trace_landlock_add_rule_net_port",
     b"btf_trace_landlock_create_domain",
     b"btf_trace_landlock_enforce_domain",
     b"btf_trace_landlock_deny_access_fs",
@@ -102,11 +102,15 @@ mod tests {
         }
         assert_eq!(mask, GENERATION_1_COMPLETE);
 
-        mark_generation_1_target(
-            &mut mask,
-            OsStr::new("btf_trace_landlock_future_generation"),
-        );
-        assert_eq!(mask, GENERATION_1_COMPLETE);
+        let mut unsupported_mask = 0;
+        for unsupported in [
+            "btf_trace_landlock_add_rule_fs",
+            "btf_trace_landlock_add_rule_net",
+            "btf_trace_landlock_future_generation",
+        ] {
+            mark_generation_1_target(&mut unsupported_mask, OsStr::new(unsupported));
+        }
+        assert_eq!(unsupported_mask, 0);
     }
 
     #[test]

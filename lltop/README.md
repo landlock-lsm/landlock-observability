@@ -7,10 +7,11 @@ The minimum supported Rust version is 1.88.
 
 ## Supported Linux versions
 
-lltop currently supports upstream Linux v7.3-rc1, the CI baseline, and later
-kernels with all required Landlock tracepoints and BPF/BTF features. Earlier
-upstream kernels and partial backports are unsupported. Older vendor kernels
-with a complete backport may work but are not tested in CI.
+lltop requires the corrected Landlock tracepoint contract planned for upstream
+Linux v7.3-rc5 and later kernels with all required Landlock tracepoints and
+BPF/BTF features. Earlier upstream kernels, including the v7.3-rc1 preview
+contract, and partial backports are unsupported. Older vendor kernels with a
+complete corrected-contract backport may work but are not tested in CI.
 
 > **Pre-release warning:** Until Linux v7.3 is released, its new Landlock
 > tracepoint interface may still change. Later release candidates may therefore

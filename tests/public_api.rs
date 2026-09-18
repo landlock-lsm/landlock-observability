@@ -109,15 +109,15 @@ fn direct_ruleset_version_and_enforcement_accessors() {
     let create = CreateRulesetEvent::builder()
         .timestamp(KernelTimestamp::from_nanoseconds(8))
         .ruleset_id(ruleset_id)
-        .ruleset_version(3)
+        .ruleset_version(0x1_0000_0003)
         .handled_fs(FilesystemAccess::from_bits(1))
         .handled_net(NetworkAccess::from_bits(2))
         .scoped(ScopeAccess::from_bits(1))
         .build();
     let mut state = State::new();
     state.apply(&Event::CreateRuleset(create));
-    let version: u32 = state.ruleset(ruleset_id).unwrap().max_observed_version();
-    assert_eq!(version, 3);
+    let version: u64 = state.ruleset(ruleset_id).unwrap().max_observed_version();
+    assert_eq!(version, 0x1_0000_0003);
 
     let id = DomainId::new(0x1_0000_0002).unwrap();
     let tid = ThreadId::new(10).unwrap();

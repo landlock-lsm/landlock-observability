@@ -20,6 +20,7 @@ typedef signed int __s32;
 typedef unsigned int __u32;
 typedef signed long long __s64;
 typedef unsigned long long __u64;
+typedef __u16 u16;
 typedef __u32 u32;
 typedef __u64 u64;
 typedef _Bool bool;
@@ -64,6 +65,10 @@ struct landlock_domain {
 	struct landlock_hierarchy *hierarchy;
 } __attribute__((preserve_access_index));
 
+struct landlock_blockers {
+	u32 access;
+} __attribute__((preserve_access_index));
+
 /*
  * Packed bitfield matching the kernel: fs/net/scope share one u32.  Read with
  * BPF_CORE_READ_BITFIELD_PROBED() so CO-RE relocates the bit offsets from the
@@ -77,7 +82,7 @@ struct access_masks {
 
 struct landlock_ruleset {
 	u64 id;
-	u32 version;
+	u64 version;
 	struct access_masks handled_masks;
 } __attribute__((preserve_access_index));
 
@@ -106,6 +111,17 @@ struct task_struct {
 } __attribute__((preserve_access_index));
 
 /* Network types. */
+struct sockaddr {
+	u16 sa_family;
+} __attribute__((preserve_access_index));
+
+struct sockaddr_in {
+	u16 sin_family;
+	__be16 sin_port;
+} __attribute__((preserve_access_index));
+
+struct sockaddr_storage;
+
 struct upid {
 	int nr;
 } __attribute__((preserve_access_index));

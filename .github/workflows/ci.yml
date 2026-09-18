@@ -14,9 +14,9 @@ env:
   CARGO_TERM_COLOR: always
   RUSTDOCFLAGS: -D warnings
   RUSTFLAGS: -D warnings
-  # Linux v7.3-rc1, the first upstream release containing the Landlock
-  # tracing interface used by this crate (Landlock ABI 11).
-  LINUX_COMMIT: cee9395acd8043be0644b25c34bfa86623f2b935
+  # Linux v7.3-rc5, the first upstream release containing the corrected
+  # Landlock tracing-interface generation 1 used by this crate.
+  LINUX_COMMIT: 72d3fcf802c45d00b300f25b848a93c3a2bd7c7e
   LANDLOCK_TEST_TOOLS_COMMIT: 1dd31a0f7961cd7107b78497859d593849f30008
   KERNEL_OUTPUT: linux/.out-landlock-x86_64-clang-light
 

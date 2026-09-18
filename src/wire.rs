@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 
 use crate::event::{
-    AddRuleFsEvent, AddRuleNetEvent, CapturedAbstractUnixSocketName, CapturedBytes,
+    AddRuleNetPortEvent, AddRulePathBeneathEvent, CapturedAbstractUnixSocketName, CapturedBytes,
     CapturedBytesError, CapturedBytesOrigin, CapturedCommand, CreateDomainEvent,
     CreateRulesetEvent, DenialContext, DenyAccessFsEvent, DenyAccessNetEvent, DenyPtraceEvent,
     DenyScopeAbstractUnixSocketEvent, DenyScopeSignalEvent, DomainId, DomainMembership,
@@ -22,8 +22,8 @@ const PATH_SIZE: usize = 256;
 const ABSTRACT_UNIX_SOCKET_NAME_MAX_LEN: usize = 107;
 
 const CREATE_RULESET: u8 = 1;
-const ADD_RULE_FS: u8 = 2;
-const ADD_RULE_NET: u8 = 3;
+const ADD_RULE_PATH_BENEATH: u8 = 2;
+const ADD_RULE_NET_PORT: u8 = 3;
 const CREATE_DOMAIN: u8 = 4;
 const DENY_ACCESS_FS: u8 = 5;
 const DENY_ACCESS_NET: u8 = 6;
@@ -305,48 +305,48 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
             CreateRulesetEvent::builder()
                 .timestamp(timestamp)
                 .ruleset_id(id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?)
-                .ruleset_version(u32_at(data, 24, "ruleset_version")?)
-                .handled_fs(FilesystemAccess::from_bits(u32_at(data, 28, "handled_fs")?))
-                .handled_net(NetworkAccess::from_bits(u32_at(data, 32, "handled_net")?))
-                .scoped(ScopeAccess::from_bits(u32_at(data, 36, "scoped")?))
+                .ruleset_version(u64_at(data, 24, "ruleset_version")?)
+                .handled_fs(FilesystemAccess::from_bits(u32_at(data, 32, "handled_fs")?))
+                .handled_net(NetworkAccess::from_bits(u32_at(data, 36, "handled_net")?))
+                .scoped(ScopeAccess::from_bits(u32_at(data, 40, "scoped")?))
                 .build(),
         ),
-        ADD_RULE_FS => Event::AddRuleFs(
-            AddRuleFsEvent::builder()
+        ADD_RULE_PATH_BENEATH => Event::AddRulePathBeneath(
+            AddRulePathBeneathEvent::builder()
                 .timestamp(timestamp)
                 .ruleset_id(id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?)
-                .ruleset_version(u32_at(data, 24, "ruleset_version")?)
+                .ruleset_version(u64_at(data, 24, "ruleset_version")?)
                 .access_rights(FilesystemAccess::from_bits(u32_at(
                     data,
-                    28,
+                    32,
                     "access_rights",
                 )?))
-                .device(u32_at(data, 32, "device")?)
-                .inode(u64_at(data, 40, "inode")?)
+                .device(u32_at(data, 36, "device")?)
+                .inode(u64_at(data, 48, "inode")?)
                 .pathname(captured_at(
                     data,
-                    48,
+                    56,
                     PATH_SIZE,
-                    36,
+                    40,
                     "pathname",
                     "pathname_bytes_omitted",
                 )?)
                 .build(),
         ),
-        ADD_RULE_NET => Event::AddRuleNet(
-            AddRuleNetEvent::builder()
+        ADD_RULE_NET_PORT => Event::AddRuleNetPort(
+            AddRuleNetPortEvent::builder()
                 .timestamp(timestamp)
                 .ruleset_id(id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?)
-                .ruleset_version(u32_at(data, 24, "ruleset_version")?)
-                .access_rights(NetworkAccess::from_bits(u32_at(data, 28, "access_rights")?))
-                .port(u64_at(data, 32, "port")?)
+                .ruleset_version(u64_at(data, 24, "ruleset_version")?)
+                .access_rights(NetworkAccess::from_bits(u32_at(data, 32, "access_rights")?))
+                .port(u64_at(data, 40, "port")?)
                 .build(),
         ),
         CREATE_DOMAIN => Event::CreateDomain(
             CreateDomainEvent::builder()
                 .timestamp(timestamp)
                 .ruleset_id(id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?)
-                .ruleset_version(u32_at(data, 24, "ruleset_version")?)
+                .ruleset_version(u64_at(data, 24, "ruleset_version")?)
                 .domain_id(id(u64_at(data, 32, "domain_id")?, "domain_id")?)
                 .parent_id(parent(u64_at(data, 40, "parent_id")?, "parent_id")?)
                 .creator_tgid(process_id(
@@ -360,7 +360,11 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
             DenyAccessFsEvent::builder()
                 .timestamp(timestamp)
                 .context(denial_context(data)?)
-                .blockers(FilesystemAccess::from_bits(u32_at(data, 64, "blockers")?))
+                .blockers_access(FilesystemAccess::from_bits(u32_at(
+                    data,
+                    64,
+                    "blockers_access",
+                )?))
                 .device(u32_at(data, 72, "device")?)
                 .inode(u64_at(data, 80, "inode")?)
                 .pathname(captured_at(
@@ -377,7 +381,11 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
             DenyAccessNetEvent::builder()
                 .timestamp(timestamp)
                 .context(denial_context(data)?)
-                .blockers(NetworkAccess::from_bits(u32_at(data, 64, "blockers")?))
+                .blockers_access(NetworkAccess::from_bits(u32_at(
+                    data,
+                    64,
+                    "blockers_access",
+                )?))
                 .source_port(u64_at(data, 72, "source_port")?)
                 .destination_port(u64_at(data, 80, "destination_port")?)
                 .build(),
@@ -429,7 +437,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Event, DecodeError> {
             FreeRulesetEvent::builder()
                 .timestamp(timestamp)
                 .ruleset_id(id(u64_at(data, 16, "ruleset_id")?, "ruleset_id")?)
-                .ruleset_version(u32_at(data, 24, "ruleset_version")?)
+                .ruleset_version(u64_at(data, 24, "ruleset_version")?)
                 .build(),
         ),
         ENFORCE_DOMAIN => Event::EnforceDomain(
@@ -537,8 +545,8 @@ mod tests {
     fn assert_concrete_trait_dispatch(event: &Event) {
         let timestamp = match event {
             Event::CreateRuleset(value) => generic_timestamp(value),
-            Event::AddRuleFs(value) => generic_timestamp(value),
-            Event::AddRuleNet(value) => generic_timestamp(value),
+            Event::AddRulePathBeneath(value) => generic_timestamp(value),
+            Event::AddRuleNetPort(value) => generic_timestamp(value),
             Event::CreateDomain(value) => generic_timestamp(value),
             Event::DenyAccessFs(value) => {
                 let _ = generic_context(value);
@@ -581,28 +589,28 @@ mod tests {
                 CreateRulesetEvent::builder()
                     .timestamp(KernelTimestamp::from_nanoseconds(0x1100000000000001))
                     .ruleset_id(RulesetId::new(0xA100000000000001).unwrap())
-                    .ruleset_version(0x12000001)
+                    .ruleset_version(0x1200000112000001)
                     .handled_fs(FilesystemAccess::from_bits(0x80010005))
                     .handled_net(NetworkAccess::from_bits(0x8000000A))
                     .scoped(ScopeAccess::from_bits(0x80000003))
                     .build(),
             ),
-            Event::AddRuleFs(
-                AddRuleFsEvent::builder()
+            Event::AddRulePathBeneath(
+                AddRulePathBeneathEvent::builder()
                     .timestamp(KernelTimestamp::from_nanoseconds(0x2200000000000002))
                     .ruleset_id(RulesetId::new(0xA200000000000002).unwrap())
-                    .ruleset_version(0x23000002)
+                    .ruleset_version(0x2300000223000002)
                     .access_rights(FilesystemAccess::from_bits(0x80004006))
                     .device(0x34000002)
                     .inode(0x4500000000000002)
                     .pathname(captured(b"/fixture/\xff\x1b", false))
                     .build(),
             ),
-            Event::AddRuleNet(
-                AddRuleNetEvent::builder()
+            Event::AddRuleNetPort(
+                AddRuleNetPortEvent::builder()
                     .timestamp(KernelTimestamp::from_nanoseconds(0x3300000000000003))
                     .ruleset_id(RulesetId::new(0xA300000000000003).unwrap())
-                    .ruleset_version(0x34000003)
+                    .ruleset_version(0x3400000334000003)
                     .access_rights(NetworkAccess::from_bits(0x80000009))
                     .port(0x5600000000000003)
                     .build(),
@@ -611,7 +619,7 @@ mod tests {
                 CreateDomainEvent::builder()
                     .timestamp(KernelTimestamp::from_nanoseconds(0x4400000000000004))
                     .ruleset_id(RulesetId::new(0xA400000000000004).unwrap())
-                    .ruleset_version(0x45000004)
+                    .ruleset_version(0x4500000445000004)
                     .domain_id(DomainId::new(0xD400000000000004).unwrap())
                     .parent_id(None)
                     .creator_tgid(pid(0x56000004))
@@ -630,7 +638,7 @@ mod tests {
                         true,
                         false,
                     ))
-                    .blockers(FilesystemAccess::from_bits(0x80010005))
+                    .blockers_access(FilesystemAccess::from_bits(0x80010005))
                     .device(0x72000005)
                     .inode(0x8300000000000005)
                     .pathname(captured(vec![b'P'; 256], true))
@@ -648,7 +656,7 @@ mod tests {
                         false,
                         true,
                     ))
-                    .blockers(NetworkAccess::from_bits(0x80010006))
+                    .blockers_access(NetworkAccess::from_bits(0x80010006))
                     .source_port(0x7400000000000006)
                     .destination_port(0x8500000000000006)
                     .build(),
@@ -719,7 +727,7 @@ mod tests {
                 FreeRulesetEvent::builder()
                     .timestamp(KernelTimestamp::from_nanoseconds(0xBB0000000000000B))
                     .ruleset_id(RulesetId::new(0xAB0000000000000B).unwrap())
-                    .ruleset_version(0xBC00000B)
+                    .ruleset_version(0xBC00000BBC00000B)
                     .build(),
             ),
             Event::EnforceDomain(
@@ -779,12 +787,12 @@ mod tests {
             value.ruleset_id(),
             RulesetId::new(0xA100000000000001).unwrap()
         );
-        assert_eq!(value.ruleset_version(), 0x12000001);
+        assert_eq!(value.ruleset_version(), 0x1200000112000001);
         assert_eq!(value.handled_fs().bits(), 0x80010005);
         assert_eq!(value.handled_net().bits(), 0x8000000A);
         assert_eq!(value.scoped().bits(), 0x80000003);
 
-        let Event::AddRuleFs(value) = decode(FIXTURES[1]).unwrap() else {
+        let Event::AddRulePathBeneath(value) = decode(FIXTURES[1]).unwrap() else {
             panic!()
         };
         assert_eq!(value.timestamp().as_nanoseconds(), 0x2200000000000002);
@@ -792,13 +800,13 @@ mod tests {
             value.ruleset_id(),
             RulesetId::new(0xA200000000000002).unwrap()
         );
-        assert_eq!(value.ruleset_version(), 0x23000002);
+        assert_eq!(value.ruleset_version(), 0x2300000223000002);
         assert_eq!(value.access_rights().bits(), 0x80004006);
         assert_eq!(value.device(), 0x34000002);
         assert_eq!(value.inode(), 0x4500000000000002);
         assert_eq!(value.pathname().as_bytes(), b"/fixture/\xff\x1b");
 
-        let Event::AddRuleNet(value) = decode(FIXTURES[2]).unwrap() else {
+        let Event::AddRuleNetPort(value) = decode(FIXTURES[2]).unwrap() else {
             panic!()
         };
         assert_eq!(value.timestamp().as_nanoseconds(), 0x3300000000000003);
@@ -806,7 +814,7 @@ mod tests {
             value.ruleset_id(),
             RulesetId::new(0xA300000000000003).unwrap()
         );
-        assert_eq!(value.ruleset_version(), 0x34000003);
+        assert_eq!(value.ruleset_version(), 0x3400000334000003);
         assert_eq!(value.access_rights().bits(), 0x80000009);
         assert_eq!(value.port(), 0x5600000000000003);
 
@@ -818,7 +826,7 @@ mod tests {
             value.ruleset_id(),
             RulesetId::new(0xA400000000000004).unwrap()
         );
-        assert_eq!(value.ruleset_version(), 0x45000004);
+        assert_eq!(value.ruleset_version(), 0x4500000445000004);
         assert_eq!(
             value.domain_id(),
             DomainId::new(0xD400000000000004).unwrap()
@@ -840,7 +848,7 @@ mod tests {
             0xC100000000000005,
             (true, false),
         );
-        assert_eq!(value.blockers().bits(), 0x80010005);
+        assert_eq!(value.blockers_access().bits(), 0x80010005);
         assert_eq!(value.device(), 0x72000005);
         assert_eq!(value.inode(), 0x8300000000000005);
         assert_eq!(value.pathname().as_bytes(), vec![b'P'; 256]);
@@ -858,7 +866,7 @@ mod tests {
             0xC100000000000006,
             (false, true),
         );
-        assert_eq!(value.blockers().bits(), 0x80010006);
+        assert_eq!(value.blockers_access().bits(), 0x80010006);
         assert_eq!(value.source_port(), 0x7400000000000006);
         assert_eq!(value.destination_port(), 0x8500000000000006);
 
@@ -937,7 +945,7 @@ mod tests {
             value.ruleset_id(),
             RulesetId::new(0xAB0000000000000B).unwrap()
         );
-        assert_eq!(value.ruleset_version(), 0xBC00000B);
+        assert_eq!(value.ruleset_version(), 0xBC00000BBC00000B);
 
         let Event::EnforceDomain(value) = decode(FIXTURES[11]).unwrap() else {
             panic!()
@@ -1132,7 +1140,7 @@ mod tests {
         for (fixture, offset, field) in [
             (4, 68, "same_exec"),
             (4, 69, "logged"),
-            (1, 36, "pathname_bytes_omitted"),
+            (1, 40, "pathname_bytes_omitted"),
             (4, 76, "pathname_bytes_omitted"),
             (11, 28, "complete"),
             (11, 29, "process_wide"),
@@ -1153,7 +1161,7 @@ mod tests {
 
     #[test]
     fn strings_preserve_bytes_and_bounds() {
-        let Event::AddRuleFs(event) = decode(FIXTURES[1]).unwrap() else {
+        let Event::AddRulePathBeneath(event) = decode(FIXTURES[1]).unwrap() else {
             panic!()
         };
         assert_eq!(event.pathname().as_bytes(), b"/fixture/\xff\x1b");
@@ -1167,9 +1175,9 @@ mod tests {
         assert!(omitted.pathname().bytes_omitted());
 
         let mut exact_fit = *FIXTURES[1];
-        exact_fit[48..48 + PATH_SIZE].fill(b'E');
-        exact_fit[36] = 0;
-        let Event::AddRuleFs(exact_fit) = decode(&exact_fit).unwrap() else {
+        exact_fit[56..56 + PATH_SIZE].fill(b'E');
+        exact_fit[40] = 0;
+        let Event::AddRulePathBeneath(exact_fit) = decode(&exact_fit).unwrap() else {
             panic!()
         };
         assert_eq!(exact_fit.pathname().as_bytes(), &[b'E'; PATH_SIZE]);
@@ -1204,9 +1212,9 @@ mod tests {
         );
 
         let mut pathname = *FIXTURES[1];
-        pathname[48..48 + PATH_SIZE].fill(0);
-        pathname[48..53].copy_from_slice(b"short");
-        pathname[36] = 1;
+        pathname[56..56 + PATH_SIZE].fill(0);
+        pathname[56..61].copy_from_slice(b"short");
+        pathname[40] = 1;
         assert_eq!(
             decode(&pathname),
             Err(DecodeError::CapturedBytes {
