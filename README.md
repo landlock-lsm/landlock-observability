@@ -91,7 +91,8 @@ privilege gain is possible; this does not identify a capability used to enforce
 the domain or claim an escape from a Landlock domain. Kernel-captured bytes
 outside ASCII letters,
 digits, `_`, `-`, `.`, and `/` are unambiguously escaped as lowercase `\xNN`.
-Unknown access bits remain numeric. Every `target` summary is one
+Access masks preserve all 64 bits; unknown access bits remain numeric. Every
+`target` summary is one
 whitespace-free token; separators captured within paths or command names remain
 byte-escaped. The complete protocol—including target summaries, access-name
 categories, counter semantics, age formatting, and readiness ordering—is

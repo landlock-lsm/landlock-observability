@@ -33,26 +33,24 @@ struct landlock_observability_event {
 		struct {
 			__u64 ruleset_id;
 			__u64 ruleset_version;
-			__u32 handled_fs;
-			__u32 handled_net;
-			__u32 scoped;
-			__u8 _tail_pad[4];
+			__u64 handled_fs;
+			__u64 handled_net;
+			__u64 scoped;
 		} create_ruleset;
 		struct {
 			__u64 ruleset_id;
 			__u64 ruleset_version;
-			__u32 access_rights;
+			__u64 access_rights;
 			__u32 dev;
 			__u8 pathname_bytes_omitted;
-			__u8 _ino_pad[7];
+			__u8 _ino_pad[3];
 			__u64 ino;
 			char pathname[PATH_MAX_LEN];
 		} add_rule_path_beneath;
 		struct {
 			__u64 ruleset_id;
 			__u64 ruleset_version;
-			__u32 access_rights;
-			__u8 _port_pad[4];
+			__u64 access_rights;
 			__u64 port;
 		} add_rule_net_port;
 		struct {
@@ -79,10 +77,10 @@ struct landlock_observability_event {
 			char creator_comm[TASK_COMM_LEN];
 			__u8 _count_pad[4];
 			__u64 num_denials;
-			__u32 blockers_access;
+			__u64 blockers_access;
 			__u8 same_exec;
 			__u8 logged;
-			__u8 _pad[2];
+			__u8 _pad[6];
 			__u32 dev;
 			__u8 pathname_bytes_omitted;
 			__u8 _ino_pad[3];
@@ -96,10 +94,10 @@ struct landlock_observability_event {
 			char creator_comm[TASK_COMM_LEN];
 			__u8 _count_pad[4];
 			__u64 num_denials;
-			__u32 blockers_access;
+			__u64 blockers_access;
 			__u8 same_exec;
 			__u8 logged;
-			__u8 _pad[2];
+			__u8 _pad[6];
 			__u64 sport;
 			__u64 dport;
 		} deny_access_net;
@@ -110,10 +108,10 @@ struct landlock_observability_event {
 			char creator_comm[TASK_COMM_LEN];
 			__u8 _count_pad[4];
 			__u64 num_denials;
-			__u32 blockers_access;
+			__u64 blockers_access;
 			__u8 same_exec;
 			__u8 logged;
-			__u8 _pad[2];
+			__u8 _pad[6];
 			__u64 tracee_domain_id;
 			__u32 tracee_pid;
 			char tracee_comm[TASK_COMM_LEN];
@@ -126,10 +124,10 @@ struct landlock_observability_event {
 			char creator_comm[TASK_COMM_LEN];
 			__u8 _count_pad[4];
 			__u64 num_denials;
-			__u32 blockers_access;
+			__u64 blockers_access;
 			__u8 same_exec;
 			__u8 logged;
-			__u8 _pad[2];
+			__u8 _pad[6];
 			__u64 target_domain_id;
 			__u32 target_pid;
 			char target_comm[TASK_COMM_LEN];
@@ -142,10 +140,10 @@ struct landlock_observability_event {
 			char creator_comm[TASK_COMM_LEN];
 			__u8 _count_pad[4];
 			__u64 num_denials;
-			__u32 blockers_access;
+			__u64 blockers_access;
 			__u8 same_exec;
 			__u8 logged;
-			__u8 _pad[2];
+			__u8 _pad[6];
 			__u64 peer_domain_id;
 			__u32 peer_pid;
 			__u32 abstract_name_len;
@@ -193,7 +191,7 @@ _Static_assert(sizeof(char) == 1, "unexpected char width");
 _Static_assert(ABSTRACT_UNIX_SOCKET_NAME_MAX_LEN ==
 		       sizeof(((struct sockaddr_un *)0)->sun_path) - 1,
 	       "unexpected abstract UNIX socket name capacity");
-_Static_assert(sizeof(struct landlock_observability_event) == 344,
+_Static_assert(sizeof(struct landlock_observability_event) == 352,
 	       "unexpected event size");
 _Static_assert(__alignof__(struct landlock_observability_event) == 8,
 	       "unexpected event alignment");
@@ -206,22 +204,20 @@ ASSERT_FIELD(_pad, 9, 3);
 ASSERT_FIELD(_union_pad, 12, 4);
 ASSERT_FIELD(create_ruleset.ruleset_id, 16, 8);
 ASSERT_FIELD(create_ruleset.ruleset_version, 24, 8);
-ASSERT_FIELD(create_ruleset.handled_fs, 32, 4);
-ASSERT_FIELD(create_ruleset.handled_net, 36, 4);
-ASSERT_FIELD(create_ruleset.scoped, 40, 4);
-ASSERT_FIELD(create_ruleset._tail_pad, 44, 4);
+ASSERT_FIELD(create_ruleset.handled_fs, 32, 8);
+ASSERT_FIELD(create_ruleset.handled_net, 40, 8);
+ASSERT_FIELD(create_ruleset.scoped, 48, 8);
 ASSERT_FIELD(add_rule_path_beneath.ruleset_id, 16, 8);
 ASSERT_FIELD(add_rule_path_beneath.ruleset_version, 24, 8);
-ASSERT_FIELD(add_rule_path_beneath.access_rights, 32, 4);
-ASSERT_FIELD(add_rule_path_beneath.dev, 36, 4);
-ASSERT_FIELD(add_rule_path_beneath.pathname_bytes_omitted, 40, 1);
-ASSERT_FIELD(add_rule_path_beneath._ino_pad, 41, 7);
+ASSERT_FIELD(add_rule_path_beneath.access_rights, 32, 8);
+ASSERT_FIELD(add_rule_path_beneath.dev, 40, 4);
+ASSERT_FIELD(add_rule_path_beneath.pathname_bytes_omitted, 44, 1);
+ASSERT_FIELD(add_rule_path_beneath._ino_pad, 45, 3);
 ASSERT_FIELD(add_rule_path_beneath.ino, 48, 8);
 ASSERT_FIELD(add_rule_path_beneath.pathname, 56, 256);
 ASSERT_FIELD(add_rule_net_port.ruleset_id, 16, 8);
 ASSERT_FIELD(add_rule_net_port.ruleset_version, 24, 8);
-ASSERT_FIELD(add_rule_net_port.access_rights, 32, 4);
-ASSERT_FIELD(add_rule_net_port._port_pad, 36, 4);
+ASSERT_FIELD(add_rule_net_port.access_rights, 32, 8);
 ASSERT_FIELD(add_rule_net_port.port, 40, 8);
 ASSERT_FIELD(create_domain.ruleset_id, 16, 8);
 ASSERT_FIELD(create_domain.ruleset_version, 24, 8);
@@ -243,49 +239,49 @@ ASSERT_FIELD(enforce_domain._pad, 31, 1);
 	ASSERT_FIELD(variant.creator_comm, 36, 16);   \
 	ASSERT_FIELD(variant._count_pad, 52, 4);      \
 	ASSERT_FIELD(variant.num_denials, 56, 8);     \
-	ASSERT_FIELD(variant.blockers_access, 64, 4); \
-	ASSERT_FIELD(variant.same_exec, 68, 1);       \
-	ASSERT_FIELD(variant.logged, 69, 1);          \
-	ASSERT_FIELD(variant._pad, 70, 2)
+	ASSERT_FIELD(variant.blockers_access, 64, 8); \
+	ASSERT_FIELD(variant.same_exec, 72, 1);       \
+	ASSERT_FIELD(variant.logged, 73, 1);          \
+	ASSERT_FIELD(variant._pad, 74, 6)
 ASSERT_DENIAL_HEADER(deny_access_fs);
-ASSERT_FIELD(deny_access_fs.dev, 72, 4);
-ASSERT_FIELD(deny_access_fs.pathname_bytes_omitted, 76, 1);
-ASSERT_FIELD(deny_access_fs._ino_pad, 77, 3);
-ASSERT_FIELD(deny_access_fs.ino, 80, 8);
-ASSERT_FIELD(deny_access_fs.pathname, 88, 256);
+ASSERT_FIELD(deny_access_fs.dev, 80, 4);
+ASSERT_FIELD(deny_access_fs.pathname_bytes_omitted, 84, 1);
+ASSERT_FIELD(deny_access_fs._ino_pad, 85, 3);
+ASSERT_FIELD(deny_access_fs.ino, 88, 8);
+ASSERT_FIELD(deny_access_fs.pathname, 96, 256);
 ASSERT_DENIAL_HEADER(deny_access_net);
-ASSERT_FIELD(deny_access_net.sport, 72, 8);
-ASSERT_FIELD(deny_access_net.dport, 80, 8);
+ASSERT_FIELD(deny_access_net.sport, 80, 8);
+ASSERT_FIELD(deny_access_net.dport, 88, 8);
 ASSERT_DENIAL_HEADER(deny_ptrace);
-ASSERT_FIELD(deny_ptrace.tracee_domain_id, 72, 8);
-ASSERT_FIELD(deny_ptrace.tracee_pid, 80, 4);
-ASSERT_FIELD(deny_ptrace.tracee_comm, 84, 16);
-ASSERT_FIELD(deny_ptrace._tail_pad, 100, 4);
+ASSERT_FIELD(deny_ptrace.tracee_domain_id, 80, 8);
+ASSERT_FIELD(deny_ptrace.tracee_pid, 88, 4);
+ASSERT_FIELD(deny_ptrace.tracee_comm, 92, 16);
+ASSERT_FIELD(deny_ptrace._tail_pad, 108, 4);
 ASSERT_DENIAL_HEADER(deny_scope_signal);
-ASSERT_FIELD(deny_scope_signal.target_domain_id, 72, 8);
-ASSERT_FIELD(deny_scope_signal.target_pid, 80, 4);
-ASSERT_FIELD(deny_scope_signal.target_comm, 84, 16);
-ASSERT_FIELD(deny_scope_signal._tail_pad, 100, 4);
+ASSERT_FIELD(deny_scope_signal.target_domain_id, 80, 8);
+ASSERT_FIELD(deny_scope_signal.target_pid, 88, 4);
+ASSERT_FIELD(deny_scope_signal.target_comm, 92, 16);
+ASSERT_FIELD(deny_scope_signal._tail_pad, 108, 4);
 ASSERT_DENIAL_HEADER(deny_scope_abstract_unix_socket);
-ASSERT_FIELD(deny_scope_abstract_unix_socket.peer_domain_id, 72, 8);
-ASSERT_FIELD(deny_scope_abstract_unix_socket.peer_pid, 80, 4);
-ASSERT_FIELD(deny_scope_abstract_unix_socket.abstract_name_len, 84, 4);
-ASSERT_FIELD(deny_scope_abstract_unix_socket.abstract_name, 88, 107);
-ASSERT_FIELD(deny_scope_abstract_unix_socket._tail_pad, 195, 5);
+ASSERT_FIELD(deny_scope_abstract_unix_socket.peer_domain_id, 80, 8);
+ASSERT_FIELD(deny_scope_abstract_unix_socket.peer_pid, 88, 4);
+ASSERT_FIELD(deny_scope_abstract_unix_socket.abstract_name_len, 92, 4);
+ASSERT_FIELD(deny_scope_abstract_unix_socket.abstract_name, 96, 107);
+ASSERT_FIELD(deny_scope_abstract_unix_socket._tail_pad, 203, 5);
 ASSERT_FIELD(free_domain.domain_id, 16, 8);
 ASSERT_FIELD(free_domain.denials, 24, 8);
 ASSERT_FIELD(free_ruleset.ruleset_id, 16, 8);
 ASSERT_FIELD(free_ruleset.ruleset_version, 24, 8);
-ASSERT_FIELD(create_ruleset, 16, 32);
+ASSERT_FIELD(create_ruleset, 16, 40);
 ASSERT_FIELD(add_rule_path_beneath, 16, 296);
 ASSERT_FIELD(add_rule_net_port, 16, 32);
 ASSERT_FIELD(create_domain, 16, 56);
 ASSERT_FIELD(enforce_domain, 16, 16);
-ASSERT_FIELD(deny_access_fs, 16, 328);
-ASSERT_FIELD(deny_access_net, 16, 72);
-ASSERT_FIELD(deny_ptrace, 16, 88);
-ASSERT_FIELD(deny_scope_signal, 16, 88);
-ASSERT_FIELD(deny_scope_abstract_unix_socket, 16, 184);
+ASSERT_FIELD(deny_access_fs, 16, 336);
+ASSERT_FIELD(deny_access_net, 16, 80);
+ASSERT_FIELD(deny_ptrace, 16, 96);
+ASSERT_FIELD(deny_scope_signal, 16, 96);
+ASSERT_FIELD(deny_scope_abstract_unix_socket, 16, 192);
 ASSERT_FIELD(free_domain, 16, 16);
 ASSERT_FIELD(free_ruleset, 16, 16);
 

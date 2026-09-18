@@ -554,13 +554,11 @@ fn no_new_privs_tsync_test(no_new_privs: bool) -> Result<(), Box<dyn Error>> {
 }
 
 fn filesystem_access(access: AccessFs) -> FilesystemAccess {
-    FilesystemAccess::from_bits(
-        u32::try_from(access as u64).expect("filesystem access bit fits u32"),
-    )
+    FilesystemAccess::from_bits(access as u64)
 }
 
 fn network_access(access: AccessNet) -> NetworkAccess {
-    NetworkAccess::from_bits(u32::try_from(access as u64).expect("network access bit fits u32"))
+    NetworkAccess::from_bits(access as u64)
 }
 
 // These fixed-kernel expectations contain only known bits.  Access values

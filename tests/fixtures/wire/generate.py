@@ -11,7 +11,7 @@ import argparse
 import struct
 from pathlib import Path
 
-SIZE = 344
+SIZE = 352
 
 
 def record(kind: int, timestamp: int, byte_order: str) -> bytearray:
@@ -48,9 +48,9 @@ def denial(
     )
     fixed(data, 36, 16, creator_comm)
     u64(data, 56, 0xC100000000000000 + seed, byte_order)
-    u32(data, 64, 0x80010000 + seed, byte_order)
-    data[68] = same_exec
-    data[69] = logged
+    u64(data, 64, 0x8000000080010000 + seed, byte_order)
+    data[72] = same_exec
+    data[73] = logged
 
 
 def encoded_fixtures(byte_order: str, suffix: str) -> dict[str, bytes]:
@@ -58,19 +58,19 @@ def encoded_fixtures(byte_order: str, suffix: str) -> dict[str, bytes]:
 
     data = record(1, 0x1100000000000001, byte_order)
     u64(data, 16, 0xA100000000000001, byte_order); u64(data, 24, 0x1200000112000001, byte_order)
-    u32(data, 32, 0x80010005, byte_order); u32(data, 36, 0x8000000A, byte_order); u32(data, 40, 0x80000003, byte_order)
+    u64(data, 32, 0x8000000080010005, byte_order); u64(data, 40, 0x800000008000000A, byte_order); u64(data, 48, 0x8000000080000003, byte_order)
     out[f"01-ruleset-create-{suffix}.bin"] = bytes(data)
 
     data = record(2, 0x2200000000000002, byte_order)
     u64(data, 16, 0xA200000000000002, byte_order); u64(data, 24, 0x2300000223000002, byte_order)
-    u32(data, 32, 0x80004006, byte_order); u32(data, 36, 0x34000002, byte_order); u64(data, 48, 0x4500000000000002, byte_order)
+    u64(data, 32, 0x8000000080004006, byte_order); u32(data, 40, 0x34000002, byte_order); u64(data, 48, 0x4500000000000002, byte_order)
     path = b"/fixture/\xff\x1b" + b"\0" + b"ignored-suffix"
     fixed(data, 56, 256, path.ljust(256, b"Z"))
     out[f"02-fs-rule-add-{suffix}.bin"] = bytes(data)
 
     data = record(3, 0x3300000000000003, byte_order)
     u64(data, 16, 0xA300000000000003, byte_order); u64(data, 24, 0x3400000334000003, byte_order)
-    u32(data, 32, 0x80000009, byte_order); u64(data, 40, 0x5600000000000003, byte_order)
+    u64(data, 32, 0x8000000080000009, byte_order); u64(data, 40, 0x5600000000000003, byte_order)
     out[f"03-network-rule-add-{suffix}.bin"] = bytes(data)
 
     data = record(4, 0x4400000000000004, byte_order)
@@ -80,30 +80,30 @@ def encoded_fixtures(byte_order: str, suffix: str) -> dict[str, bytes]:
     out[f"04-domain-create-{suffix}.bin"] = bytes(data)
 
     data = record(5, 0x5500000000000005, byte_order); denial(data, 5, 1, 0, byte_order)
-    u32(data, 72, 0x72000005, byte_order); u64(data, 80, 0x8300000000000005, byte_order)
-    fixed(data, 88, 256, b"P" * 256)
-    data[76] = 1
+    u32(data, 80, 0x72000005, byte_order); u64(data, 88, 0x8300000000000005, byte_order)
+    fixed(data, 96, 256, b"P" * 256)
+    data[84] = 1
     out[f"05-fs-denial-{suffix}.bin"] = bytes(data)
 
     data = record(6, 0x6600000000000006, byte_order); denial(data, 6, 0, 1, byte_order)
-    u64(data, 72, 0x7400000000000006, byte_order); u64(data, 80, 0x8500000000000006, byte_order)
+    u64(data, 80, 0x7400000000000006, byte_order); u64(data, 88, 0x8500000000000006, byte_order)
     out[f"06-network-denial-{suffix}.bin"] = bytes(data)
 
     data = record(7, 0x7700000000000007, byte_order); denial(data, 7, 1, 1, byte_order)
-    u64(data, 72, 0, byte_order); u32(data, 80, 0x86000007, byte_order)
-    fixed(data, 84, 16, b"ptrace-target\0xy")
+    u64(data, 80, 0, byte_order); u32(data, 88, 0x86000007, byte_order)
+    fixed(data, 92, 16, b"ptrace-target\0xy")
     out[f"07-ptrace-denial-{suffix}.bin"] = bytes(data)
 
     data = record(8, 0x8800000000000008, byte_order); denial(data, 8, 0, 0, byte_order)
-    u64(data, 72, 0xE800000000000008, byte_order); u32(data, 80, 0x97000008, byte_order)
-    fixed(data, 84, 16, b"signal-target\0xy")
+    u64(data, 80, 0xE800000000000008, byte_order); u32(data, 88, 0x97000008, byte_order)
+    fixed(data, 92, 16, b"signal-target\0xy")
     out[f"08-signal-denial-{suffix}.bin"] = bytes(data)
 
     data = record(9, 0x9900000000000009, byte_order); denial(data, 9, 1, 0, byte_order)
-    u64(data, 72, 0xE900000000000009, byte_order); u32(data, 80, 0xA8000009, byte_order)
+    u64(data, 80, 0xE900000000000009, byte_order); u32(data, 88, 0xA8000009, byte_order)
     abstract_name = b"service\0\xff\0"
-    u32(data, 84, len(abstract_name), byte_order)
-    fixed(data, 88, 107, abstract_name.ljust(107, b"Z"))
+    u32(data, 92, len(abstract_name), byte_order)
+    fixed(data, 96, 107, abstract_name.ljust(107, b"Z"))
     out[f"09-abstract-unix-denial-{suffix}.bin"] = bytes(data)
 
     data = record(10, 0xAA0000000000000A, byte_order)

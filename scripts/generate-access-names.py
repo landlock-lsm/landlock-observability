@@ -70,8 +70,8 @@ def parse_uapi(path):
         if not bit_match:
             raise ValueError(f"malformed single-bit expression for {macro}: {expression}")
         shift = int(bit_match.group(1))
-        if shift >= 32:
-            raise ValueError(f"bit for {macro} does not fit in u32: {shift}")
+        if shift >= 64:
+            raise ValueError(f"bit for {macro} does not fit in u64: {shift}")
         if macro in constants[category]:
             raise ValueError(f"duplicate UAPI constant: {macro}")
         for other_macro, other_shift in constants[category].items():
@@ -142,9 +142,9 @@ def render(tables):
     ]
     for category, _, _, rust_name in CATEGORIES:
         lines.append("#[rustfmt::skip]")
-        lines.append(f"pub(crate) const {rust_name}: &[(u32, &str)] = &[")
+        lines.append(f"pub(crate) const {rust_name}: &[(u64, &str)] = &[")
         for shift, name in tables[category]:
-            lines.append(f'    (1_u32 << {shift}, "{name}"),')
+            lines.append(f'    (1_u64 << {shift}, "{name}"),')
         lines.extend(["];"] if category == CATEGORIES[-1][0] else ["];", ""])
     return "\n".join(lines) + "\n"
 

@@ -98,7 +98,7 @@ _Static_assert(!HAS_CHECKED_PORT(4, AF_UNSPEC, AF_INET6),
  * an absent port.
  */
 static __always_inline void
-project_checked_port(__u32 blockers_access, u16 socket_family,
+project_checked_port(__u64 blockers_access, u16 socket_family,
 		     const struct sockaddr_storage *address, int addrlen,
 		     __u64 *source_port, __u64 *destination_port)
 {
@@ -357,7 +357,7 @@ int BPF_PROG(handle_deny_access_fs, const struct landlock_hierarchy *hierarchy,
 			 &ev->deny_access_fs.creator_tgid,
 			 ev->deny_access_fs.creator_comm,
 			 &ev->deny_access_fs.num_denials, hierarchy);
-	ev->deny_access_fs.blockers_access = BPF_CORE_READ(blockers, access);
+	ev->deny_access_fs.blockers_access = blockers->access;
 	ev->deny_access_fs.same_exec = same_exec;
 	ev->deny_access_fs.logged = logged;
 	ev->deny_access_fs.dev = BPF_CORE_READ(path, dentry, d_sb, s_dev);
@@ -381,7 +381,7 @@ int BPF_PROG(handle_deny_access_net, const struct landlock_hierarchy *hierarchy,
 	     u16 socket_family, const struct sockaddr_storage *address,
 	     int addrlen)
 {
-	const __u32 blockers_access = BPF_CORE_READ(blockers, access);
+	const __u64 blockers_access = blockers->access;
 	struct landlock_observability_event *ev = alloc_event();
 
 	(void)sk;

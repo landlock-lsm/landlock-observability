@@ -342,7 +342,7 @@ jobs:
           batch_integration=BATCH_INTEGRATION_EXECUTABLE \
           privilege-lifecycle=PRIVILEGE_LIFECYCLE_EXECUTABLE >> "$GITHUB_ENV"
 
-    - name: Check CO-RE declarations
+    - name: Check CO-RE declarations and access widths
       run: |
         linux_tools_package=$(
           dpkg-query --showformat='${Depends}' --show linux-tools-generic
@@ -351,6 +351,18 @@ jobs:
           ./scripts/ci/check-core-declarations.sh \
           --vmlinux "$KERNEL_OUTPUT/vmlinux" \
           --build-dir target/debug/build
+        mapfile -d '' objects < <(
+          find target/debug/build -type f \
+            -name landlock_observability.bpf.o -print0
+        )
+        if (( ${#objects[@]} == 0 )); then
+          echo 'No generated BPF object found for access-width validation' >&2
+          exit 1
+        fi
+        for object in "${objects[@]}"; do
+          ./scripts/ci/check-core-access-widths.sh \
+            --bpf-object "$object"
+        done
 
     - name: Run privileged integration test in the integration guest
       run: |

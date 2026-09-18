@@ -778,9 +778,9 @@ mod tests {
                     .timestamp(timestamp(10))
                     .ruleset_id(RulesetId::new(MIN_LANDLOCK_ID + 7).unwrap())
                     .ruleset_version(0)
-                    .handled_fs(FilesystemAccess::from_bits(0x8000_0001))
-                    .handled_net(NetworkAccess::from_bits(0x8000_0002))
-                    .scoped(ScopeAccess::from_bits(0x8000_0001))
+                    .handled_fs(FilesystemAccess::from_bits(0x8000_0000_0000_0001))
+                    .handled_net(NetworkAccess::from_bits(0x8000_0000_0000_0002))
+                    .scoped(ScopeAccess::from_bits(0x8000_0000_0000_0001))
                     .build(),
             ),
         );
@@ -795,9 +795,9 @@ mod tests {
         assert_eq!(ruleset.lifecycle(), LifecycleState::Allocated);
         assert_eq!(ruleset.creation_timestamp(), Some(timestamp(10)));
         assert_eq!(ruleset.max_observed_version(), 0);
-        assert_eq!(ruleset.handled_fs().unwrap().bits(), 0x8000_0001);
-        assert_eq!(ruleset.handled_net().unwrap().bits(), 0x8000_0002);
-        assert_eq!(ruleset.scoped().unwrap().bits(), 0x8000_0001);
+        assert_eq!(ruleset.handled_fs().unwrap().bits(), 0x8000_0000_0000_0001);
+        assert_eq!(ruleset.handled_net().unwrap().bits(), 0x8000_0000_0000_0002);
+        assert_eq!(ruleset.scoped().unwrap().bits(), 0x8000_0000_0000_0001);
         let reference = RulesetVersion::new(ruleset.ruleset_id(), 0);
         assert_eq!(reference.to_string(), "100000007.0");
         assert_eq!(format!("{reference:#020}"), "100000007.0");
@@ -821,7 +821,7 @@ mod tests {
                     .timestamp(timestamp(20))
                     .ruleset_id(id)
                     .ruleset_version(5)
-                    .access_rights(FilesystemAccess::from_bits(0x8000_0001))
+                    .access_rights(FilesystemAccess::from_bits(0x8000_0000_0000_0001))
                     .device(3)
                     .inode(4)
                     .pathname(string(b"new"))
@@ -854,7 +854,7 @@ mod tests {
                     .timestamp(timestamp(40))
                     .ruleset_id(id)
                     .ruleset_version(8)
-                    .access_rights(NetworkAccess::from_bits(0x8000_0001))
+                    .access_rights(NetworkAccess::from_bits(0x8000_0000_0000_0001))
                     .port(80)
                     .build(),
             ),
@@ -896,7 +896,7 @@ mod tests {
         assert_eq!(ruleset.filesystem_rule_count(), 2);
         assert_eq!(ruleset.filesystem_rules().count(), 2);
         let fs = ruleset.filesystem_rule(3, 4).unwrap();
-        assert_eq!(fs.access_rights().bits(), 0xc000_0003);
+        assert_eq!(fs.access_rights().bits(), 0x8000_0000_4000_0003);
         assert_eq!(fs.pathname().as_bytes(), b"new");
         assert_eq!(
             ruleset
@@ -910,7 +910,7 @@ mod tests {
         assert_eq!(ruleset.network_rules().count(), 2);
         assert_eq!(
             ruleset.network_rule(80).unwrap().access_rights().bits(),
-            0xc000_0003
+            0x8000_0000_4000_0003
         );
         assert_eq!(ruleset.network_rule(81).unwrap().access_rights().bits(), 4);
         let network_only = state

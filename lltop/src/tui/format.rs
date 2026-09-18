@@ -10,7 +10,7 @@ pub(super) fn escape<K: CapturedBytesOrigin>(value: &CapturedBytes<K>) -> String
     value.to_string()
 }
 
-fn access<'a>(names: impl Iterator<Item = &'a str>, unknown: u32) -> String {
+fn access<'a>(names: impl Iterator<Item = &'a str>, unknown: u64) -> String {
     let mut parts = names.map(str::to_owned).collect::<Vec<_>>();
     if unknown != 0 {
         parts.push(format!("0x{unknown:x}"));
@@ -113,16 +113,22 @@ mod tests {
 
     #[test]
     fn access_rights_support_prefixed_denials_and_unprefixed_fields() {
-        let fs_access = FilesystemAccess::from_bits((1 << 2) | 0x8000_0000);
-        let net_access = NetworkAccess::from_bits((1 << 1) | 0x8000_0000);
-        let scoped = ScopeAccess::from_bits((1 << 1) | 0x8000_0000);
+        let fs_access = FilesystemAccess::from_bits((1 << 2) | 0x8000_0000_0000_0000);
+        let net_access = NetworkAccess::from_bits((1 << 1) | 0x8000_0000_0000_0000);
+        let scoped = ScopeAccess::from_bits((1 << 1) | 0x8000_0000_0000_0000);
 
-        assert_eq!(filesystem_rights(fs_access), "read_file, 0x80000000");
-        assert_eq!(network_rights(net_access), "connect_tcp, 0x80000000");
-        assert_eq!(scope_rights(scoped), "signal, 0x80000000");
-        assert_eq!(filesystem(fs_access), "FS: read_file, 0x80000000");
-        assert_eq!(network(net_access), "Net: connect_tcp, 0x80000000");
-        assert_eq!(scope(scoped), "Scope: signal, 0x80000000");
+        assert_eq!(
+            filesystem_rights(fs_access),
+            "read_file, 0x8000000000000000"
+        );
+        assert_eq!(
+            network_rights(net_access),
+            "connect_tcp, 0x8000000000000000"
+        );
+        assert_eq!(scope_rights(scoped), "signal, 0x8000000000000000");
+        assert_eq!(filesystem(fs_access), "FS: read_file, 0x8000000000000000");
+        assert_eq!(network(net_access), "Net: connect_tcp, 0x8000000000000000");
+        assert_eq!(scope(scoped), "Scope: signal, 0x8000000000000000");
     }
 
     #[test]

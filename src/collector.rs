@@ -951,11 +951,11 @@ mod tests {
     use std::time::Instant;
 
     #[cfg(target_endian = "little")]
-    const RULESET_FREE_FIXTURE: &[u8; 344] =
+    const RULESET_FREE_FIXTURE: &[u8; 352] =
         include_bytes!("../tests/fixtures/wire/11-ruleset-free-little-endian.bin");
 
     #[cfg(target_endian = "big")]
-    const RULESET_FREE_FIXTURE: &[u8; 344] =
+    const RULESET_FREE_FIXTURE: &[u8; 352] =
         include_bytes!("../tests/fixtures/wire/11-ruleset-free-big-endian.bin");
 
     fn event(id_offset: u64) -> Event {
@@ -968,7 +968,7 @@ mod tests {
         )
     }
 
-    fn sample(timestamp: u64) -> [u8; 344] {
+    fn sample(timestamp: u64) -> [u8; 352] {
         let mut data = *RULESET_FREE_FIXTURE;
         data[..size_of::<u64>()].copy_from_slice(&timestamp.to_ne_bytes());
         data

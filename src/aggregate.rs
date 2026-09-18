@@ -653,7 +653,7 @@ mod tests {
         timestamp: u64,
         domain_offset: u64,
         cumulative: u64,
-        blockers_access: u32,
+        blockers_access: u64,
         target: (u32, u64, &[u8]),
         flags: (bool, bool),
     ) -> Event {
@@ -672,7 +672,7 @@ mod tests {
     fn network(
         timestamp: u64,
         domain_offset: u64,
-        blockers_access: u32,
+        blockers_access: u64,
         ports: (u64, u64),
     ) -> Event {
         Event::DenyAccessNet(
@@ -720,8 +720,15 @@ mod tests {
                 .build(),
         );
         let mut aggregator = DenialAggregator::new();
-        aggregator.observe(&fs(1, 10, 1, 0x8000_0001, (2, 3, b"/a"), (false, false)));
-        aggregator.observe(&network(2, 11, 0x8000_0002, (100, 200)));
+        aggregator.observe(&fs(
+            1,
+            10,
+            1,
+            0x8000_0000_0000_0001,
+            (2, 3, b"/a"),
+            (false, false),
+        ));
+        aggregator.observe(&network(2, 11, 0x8000_0000_0000_0002, (100, 200)));
         aggregator.observe(&ptrace);
         aggregator.observe(&signal);
         aggregator.observe(&unix);
@@ -729,13 +736,13 @@ mod tests {
         assert_eq!(aggregator.len(), 5);
         let fs_key = DenialKey::Filesystem(FilesystemDenialKey::new(
             DomainId::new(MIN_LANDLOCK_ID + 10).unwrap(),
-            FilesystemAccess::from_bits(0x8000_0001),
+            FilesystemAccess::from_bits(0x8000_0000_0000_0001),
             2,
             3,
         ));
         let network_key = DenialKey::Network(NetworkDenialKey::new(
             DomainId::new(MIN_LANDLOCK_ID + 11).unwrap(),
-            NetworkAccess::from_bits(0x8000_0002),
+            NetworkAccess::from_bits(0x8000_0000_0000_0002),
             100,
             200,
         ));
@@ -769,12 +776,12 @@ mod tests {
         let DenialKey::Filesystem(key) = fs_key else {
             panic!("filesystem key changed variant");
         };
-        assert_eq!(key.blockers_access().bits(), 0x8000_0001);
+        assert_eq!(key.blockers_access().bits(), 0x8000_0000_0000_0001);
         assert_eq!((key.device(), key.inode()), (2, 3));
         let DenialKey::Network(key) = network_key else {
             panic!("network key changed variant");
         };
-        assert_eq!(key.blockers_access().bits(), 0x8000_0002);
+        assert_eq!(key.blockers_access().bits(), 0x8000_0000_0000_0002);
         assert_eq!((key.source_port(), key.destination_port()), (100, 200));
         let DenialKey::Ptrace(key) = ptrace_key else {
             panic!("ptrace key changed variant");
@@ -938,7 +945,14 @@ mod tests {
         };
         let mut aggregator = DenialAggregator::new();
         aggregator.observe(&fs(1, 1, 1, 1, (1, 1, b"/a"), (false, false)));
-        aggregator.observe(&fs(1, 1, 1, 0x8000_0001, (1, 1, b"/a"), (false, false)));
+        aggregator.observe(&fs(
+            1,
+            1,
+            1,
+            0x8000_0000_0000_0001,
+            (1, 1, b"/a"),
+            (false, false),
+        ));
         aggregator.observe(&signal(DomainMembership::Unsandboxed));
         aggregator.observe(&signal(DomainMembership::Sandboxed(
             DomainId::new(MIN_LANDLOCK_ID + 2).unwrap(),

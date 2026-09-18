@@ -121,8 +121,8 @@ domain. `tracee_domain`, `target_domain`, and `peer_domain` occur on ptrace,
 signal, and abstract UNIX socket denials respectively; their value is `0` when
 the tracee, target, or peer was unsandboxed.
 
-Known blockers use kernel semantic names (`FS:read_file`,
-`Net:connect_tcp`, `ptrace`, `Scope:signal`, or
+Access masks preserve all 64 bits. Known blockers use kernel semantic names
+(`FS:read_file`, `Net:connect_tcp`, `ptrace`, `Scope:signal`, or
 `Scope:abstract_unix_socket`). Unknown access bits are retained as a lowercase
 `0x` hexadecimal comma-separated component. Every target summary is one token.
 Network targets are `sport:<port>` for unambiguous bind access and

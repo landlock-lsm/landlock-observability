@@ -311,26 +311,26 @@ macro_rules! access_type {
         #[doc = $description]
         #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
         #[non_exhaustive]
-        pub struct $mask(u32);
+        pub struct $mask(u64);
 
         impl $mask {
             /// Creates a mask while preserving every bit.
-            pub const fn from_bits(bits: u32) -> Self {
+            pub const fn from_bits(bits: u64) -> Self {
                 Self(bits)
             }
 
             /// Returns every bit, including bits unknown to this library.
-            pub const fn bits(self) -> u32 {
+            pub const fn bits(self) -> u64 {
                 self.0
             }
 
             /// Returns the set bits known to this library.
-            pub fn known_bits(self) -> u32 {
+            pub fn known_bits(self) -> u64 {
                 self.0 & $table.iter().fold(0, |bits, (bit, _)| bits | bit)
             }
 
             /// Returns the set bits unknown to this library.
-            pub fn unknown_bits(self) -> u32 {
+            pub fn unknown_bits(self) -> u64 {
                 self.0 & !$table.iter().fold(0, |bits, (bit, _)| bits | bit)
             }
 
@@ -352,13 +352,13 @@ macro_rules! access_type {
         #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
         #[non_exhaustive]
         pub struct $name {
-            bit: u32,
+            bit: u64,
             name: &'static str,
         }
 
         impl $name {
             /// Returns the single bit represented by this name.
-            pub const fn bit(self) -> u32 {
+            pub const fn bit(self) -> u64 {
                 self.bit
             }
 
@@ -1332,21 +1332,21 @@ mod tests {
 
     #[test]
     fn access_names_and_unknown_bits() {
-        let fs = FilesystemAccess::from_bits(u32::MAX);
-        let network = NetworkAccess::from_bits((1 << 31) | 0b0101);
-        let scope = ScopeAccess::from_bits((1 << 31) | 0b10);
+        let fs = FilesystemAccess::from_bits(u64::MAX);
+        let network = NetworkAccess::from_bits((1 << 63) | 0b0101);
+        let scope = ScopeAccess::from_bits((1 << 63) | 0b10);
 
         assert_eq!(FilesystemAccess::all_known_names().count(), 17);
         assert_eq!(NetworkAccess::all_known_names().count(), 4);
         assert_eq!(ScopeAccess::all_known_names().count(), 2);
         assert_eq!(fs.known_names().count(), 17);
         assert_eq!(fs.known_bits(), 0x1ffff);
-        assert_eq!(fs.unknown_bits(), 0xfffe0000);
-        assert_eq!(network.bits(), 0x80000005);
+        assert_eq!(fs.unknown_bits(), 0xfffffffffffe0000);
+        assert_eq!(network.bits(), 0x8000000000000005);
         assert_eq!(network.known_bits(), 5);
-        assert_eq!(network.unknown_bits(), 1 << 31);
+        assert_eq!(network.unknown_bits(), 1 << 63);
         assert_eq!(scope.known_bits(), 2);
-        assert_eq!(scope.unknown_bits(), 1 << 31);
+        assert_eq!(scope.unknown_bits(), 1 << 63);
         assert_eq!(
             network
                 .known_names()
