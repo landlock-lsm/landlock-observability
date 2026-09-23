@@ -262,9 +262,13 @@ jobs:
           --check
 
   kernel_integration:
-    name: Privileged kernel integration test
+    name: Kernel integration
     runs-on: ubuntu-24.04
-    needs: kernel_x86_64
+    needs: [commit_list, kernel_x86_64]
+    strategy:
+      fail-fast: false
+      matrix:
+        commit: ${{ fromJSON(needs.commit_list.outputs.commits) }}
     steps:
 
     - name: Install integration prerequisites
@@ -285,7 +289,7 @@ jobs:
 
     - uses: actions/checkout@v5
       with:
-        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        ref: ${{ matrix.commit }}
 
     - name: Check out Landlock test tools
       uses: actions/checkout@v5
