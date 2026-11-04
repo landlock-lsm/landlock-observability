@@ -227,12 +227,24 @@ int BPF_PROG(handle_create_ruleset, const struct landlock_ruleset *ruleset)
 	ev->type = EVENT_CREATE_RULESET;
 	ev->create_ruleset.ruleset_id = BPF_CORE_READ(ruleset, id);
 	ev->create_ruleset.ruleset_version = BPF_CORE_READ(ruleset, version);
-	ev->create_ruleset.handled_fs =
-		BPF_CORE_READ_BITFIELD_PROBED(ruleset, handled_masks.fs);
-	ev->create_ruleset.handled_net =
-		BPF_CORE_READ_BITFIELD_PROBED(ruleset, handled_masks.net);
-	ev->create_ruleset.scoped =
-		BPF_CORE_READ_BITFIELD_PROBED(ruleset, handled_masks.scope);
+	if (bpf_core_field_exists(struct landlock_ruleset___layer, layer)) {
+		const struct landlock_ruleset___layer *ruleset_layer =
+			(const void *)ruleset;
+
+		ev->create_ruleset.handled_fs = BPF_CORE_READ_BITFIELD_PROBED(
+			ruleset_layer, layer.handled.fs);
+		ev->create_ruleset.handled_net = BPF_CORE_READ_BITFIELD_PROBED(
+			ruleset_layer, layer.handled.net);
+		ev->create_ruleset.scoped = BPF_CORE_READ_BITFIELD_PROBED(
+			ruleset_layer, layer.handled.scope);
+	} else {
+		ev->create_ruleset.handled_fs =
+			BPF_CORE_READ_BITFIELD_PROBED(ruleset, handled_masks.fs);
+		ev->create_ruleset.handled_net =
+			BPF_CORE_READ_BITFIELD_PROBED(ruleset, handled_masks.net);
+		ev->create_ruleset.scoped =
+			BPF_CORE_READ_BITFIELD_PROBED(ruleset, handled_masks.scope);
+	}
 
 	submit_event(ev);
 	return 0;
@@ -499,7 +511,13 @@ int BPF_PROG(handle_deny_scope_abstract_unix_socket,
 	ev->deny_scope_abstract_unix_socket.same_exec = same_exec;
 	ev->deny_scope_abstract_unix_socket.logged = logged;
 	ev->deny_scope_abstract_unix_socket.peer_domain_id = peer_domain_id;
-	peer_pid = BPF_CORE_READ(peer, sk_peer_pid);
+	if (bpf_core_field_exists(struct sock___pids, sk_peer_pid)) {
+		const struct sock___pids *peer_pids = (const void *)peer;
+
+		peer_pid = BPF_CORE_READ(peer_pids, sk_peer_pid[PIDTYPE_TGID]);
+	} else {
+		peer_pid = BPF_CORE_READ(peer, sk_peer_pid);
+	}
 	ev->deny_scope_abstract_unix_socket.peer_pid =
 		peer_pid ? BPF_CORE_READ(peer_pid, numbers[0].nr) : 0;
 
