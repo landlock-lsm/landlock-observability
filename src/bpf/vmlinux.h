@@ -96,6 +96,14 @@ struct landlock_ruleset {
 	struct access_masks handled_masks;
 } __attribute__((preserve_access_index));
 
+struct layer_config {
+	struct access_masks handled;
+} __attribute__((preserve_access_index));
+
+struct landlock_ruleset___layer {
+	struct layer_config layer;
+} __attribute__((preserve_access_index));
+
 /* Filesystem types. */
 struct super_block {
 	u32 s_dev;
@@ -142,6 +150,15 @@ struct pid {
 
 struct sock {
 	struct pid *sk_peer_pid;
+} __attribute__((preserve_access_index));
+
+enum pid_type {
+	PIDTYPE_PID,
+	PIDTYPE_TGID,
+};
+
+struct sock___pids {
+	struct pid *sk_peer_pid[PIDTYPE_TGID + 1];
 } __attribute__((preserve_access_index));
 
 struct sockaddr_un {
